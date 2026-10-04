@@ -2,7 +2,8 @@
 <html lang="en" data-theme="dark">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0a0a0f">
 <title>Look Mobile</title>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
@@ -71,7 +72,6 @@ input,select,textarea{font-family:inherit;color:inherit}
 .storage-sync-icon{width:20px;height:20px;border-radius:6px;background:var(--glass);border:1px solid var(--glass-border);display:flex;align-items:center;justify-content:center;font-size:10px;flex-shrink:0;transition:all .15s;color:var(--text-3)}
 .storage-status:hover .storage-sync-icon{background:var(--blue);color:#fff;border-color:var(--blue)}
 .storage-sync-icon.spinning{animation:spin 1s linear infinite;background:var(--orange);color:#fff;border-color:var(--orange)}
-/* 🆕 Footer with version + links */
 .sidebar-footer{padding:8px 4px 4px;border-top:1px solid var(--separator);margin-top:8px;text-align:center;font-size:9.5px;line-height:1.5;color:var(--text-3)}
 .sidebar-footer .version-chip{display:inline-block;padding:1px 7px;border-radius:999px;background:rgba(10,132,255,.15);color:var(--blue);font-weight:700;font-size:9px;letter-spacing:.05em;margin-bottom:3px}
 .sidebar-footer .footer-link{color:var(--text-2);text-decoration:none;font-weight:600;transition:color .15s;cursor:pointer}
@@ -90,7 +90,7 @@ input,select,textarea{font-family:inherit;color:inherit}
 .ios-search{position:relative;display:flex;align-items:center;background:var(--glass);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);border:1px solid var(--glass-border);border-radius:999px;padding:0 6px 0 34px;height:38px;transition:all .2s;min-width:220px;flex:1;max-width:420px}
 .ios-search:focus-within{border-color:var(--blue);box-shadow:0 0 0 3px rgba(10,132,255,.2);background:var(--glass-strong)}
 .ios-search::before{content:'🔍';position:absolute;left:13px;font-size:12px;opacity:.6}
-.ios-search input{flex:1;background:none;border:none;outline:none;font-size:13px;padding:0;color:var(--text);height:100%}
+.ios-search input{flex:1;background:none;border:none;outline:none;font-size:13px;padding:0;color:var(--text);height:100%;min-width:0}
 .ios-search input::placeholder{color:var(--text-3)}
 .ios-search .clear{width:20px;height:20px;border-radius:50%;background:var(--text-3);color:var(--bg-grad-1);font-size:11px;display:none;align-items:center;justify-content:center;font-weight:700;cursor:pointer;flex-shrink:0}
 .ios-search input:not(:placeholder-shown)~.clear{display:flex}
@@ -168,27 +168,26 @@ select.ios-input{cursor:pointer;appearance:none;background-image:url("data:image
 .code-chip.reload{background:rgba(100,210,255,.15);color:var(--teal)}
 .code-chip.barcode{background:rgba(48,209,88,.15);color:var(--green);font-family:'SF Mono',monospace}
 .warranty-chip{display:inline-flex;align-items:center;gap:3px;padding:2px 7px;border-radius:6px;background:rgba(255,159,10,.15);color:var(--orange);font-size:10px;font-weight:700}
-.item-row{display:flex;justify-content:space-between;align-items:center;padding:11px 12px;border-radius:var(--radius-md);margin-bottom:6px;background:var(--glass-hover);transition:all .15s;border:1px solid transparent}
+.item-row{display:flex;justify-content:space-between;align-items:center;padding:11px 12px;border-radius:var(--radius-md);margin-bottom:6px;background:var(--glass-hover);transition:all .15s;border:1px solid transparent;gap:8px}
 .item-row:hover{background:var(--glass-strong);border-color:var(--glass-border-strong)}
 .item-info{min-width:0;flex:1}.item-actions{display:flex;align-items:center;gap:10px;flex-shrink:0}
 .qty-ctrl{display:flex;align-items:center;gap:4px}
 .qty-ctrl button{width:22px;height:22px;border-radius:6px;background:var(--glass);border:1px solid var(--glass-border);font-weight:700;font-size:12px;display:flex;align-items:center;justify-content:center;color:var(--text-2)}
 .qty-ctrl button:hover{background:var(--glass-strong);color:var(--text)}
 .qty-ctrl span{min-width:20px;text-align:center;font-weight:700;font-size:12px}
-.total-box{background:linear-gradient(135deg,rgba(10,132,255,.15),rgba(191,90,242,.1));border:1px solid rgba(10,132,255,.25);border-radius:var(--radius-lg);padding:14px;text-align:center;margin-top:12px}
+.total-box{background:linear-gradient(135deg,rgba(10,132,255,.15),rgba(191,90,242,.1));border:1px solid rgba(10,132,255,.25);border-radius:var(--radius-lg);padding:12px;text-align:center;margin-top:10px}
 .total-val{font-size:22px;font-weight:700;letter-spacing:-.03em;margin-top:2px}
-/* 🆕 Big change display */
-.change-box{background:linear-gradient(135deg,rgba(48,209,88,.2),rgba(48,209,88,.08));border:1.5px solid rgba(48,209,88,.55);border-radius:var(--radius-lg);padding:14px;text-align:center;margin-top:10px;display:none}
+.change-box{background:linear-gradient(135deg,rgba(48,209,88,.2),rgba(48,209,88,.08));border:1.5px solid rgba(48,209,88,.55);border-radius:var(--radius-lg);padding:12px;text-align:center;margin-top:8px;display:none}
 .change-box.show{display:block;animation:pop .4s cubic-bezier(.16,1.4,.3,1)}
 @keyframes pop{0%{transform:scale(.9);opacity:0}100%{transform:scale(1);opacity:1}}
 .change-label{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--green)}
-.change-val{font-size:32px;font-weight:800;letter-spacing:-.03em;color:var(--green);margin-top:2px;text-shadow:0 0 20px rgba(48,209,88,.5)}
+.change-val{font-size:28px;font-weight:800;letter-spacing:-.03em;color:var(--green);margin-top:2px;text-shadow:0 0 20px rgba(48,209,88,.5)}
 .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;animation:fadeIn .2s}
 .modal{background:var(--glass-strong);backdrop-filter:var(--blur);border:1px solid var(--glass-border-strong);border-radius:var(--radius-xl);padding:22px;width:100%;max-width:600px;max-height:88vh;overflow-y:auto;box-shadow:var(--shadow-lg);animation:modalIn .3s cubic-bezier(.16,1,.3,1)}
 @keyframes modalIn{from{transform:scale(.94) translateY(10px);opacity:0}to{transform:scale(1) translateY(0);opacity:1}}
 .modal h2{font-size:17px;font-weight:700;letter-spacing:-.02em;margin-bottom:16px}
 .form-grid{display:flex;flex-direction:column;gap:12px;margin-bottom:16px}
-#toast-wrap{position:fixed;top:24px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;gap:8px;align-items:center}
+#toast-wrap{position:fixed;top:24px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none}
 .toast{background:var(--glass-strong);backdrop-filter:var(--blur);border:1px solid var(--glass-border-strong);padding:11px 18px;border-radius:999px;box-shadow:var(--shadow-lg);font-size:12.5px;font-weight:500;color:var(--text);animation:toastIn .35s cubic-bezier(.16,1,.3,1);display:flex;align-items:center;gap:8px}
 .toast::before{content:'✓';color:var(--green);font-weight:700}
 .toast.error::before{content:'✕';color:var(--red)}
@@ -218,25 +217,18 @@ select.ios-input{cursor:pointer;appearance:none;background-image:url("data:image
 .loading-screen{position:fixed;inset:0;z-index:7000;display:flex;align-items:center;justify-content:center;background:var(--bg-grad-1);flex-direction:column;gap:16px;color:var(--text)}
 .spinner{width:44px;height:44px;border:4px solid var(--glass-border);border-top-color:var(--blue);border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
+
+/* PRINT — base (overridden by dynamic style) */
 @media print{
   body *{visibility:hidden}
   #receipt,#receipt *{visibility:visible}
-  #receipt{display:block!important;position:absolute;left:0;top:0;width:100%;font-family:'Courier New',monospace;font-size:12px;color:#000;background:#fff}
+  #receipt{display:block!important;position:absolute;left:0;top:0;font-family:'Courier New',monospace;color:#000;background:#fff;padding:0}
   #receipt .center{text-align:center}
   #receipt .row-line{display:flex;justify-content:space-between}
-  #receipt hr{border:none;border-top:1px dashed #000;margin:5px 0}
+  #receipt hr{border:none;border-top:1px dashed #000;margin:4px 0}
 }
 #receipt{display:none}
-@media(max-width:900px){
-  .layout{padding:8px;gap:8px}
-  .sidebar{width:64px;padding:10px 6px}
-  .brand-text,.nav a span:last-child,.user-info,.storage-label,.sidebar-footer{display:none}
-  .nav a{justify-content:center;padding:10px 8px}
-  .nav a .nav-icon{width:auto}
-  .brand{justify-content:center;padding:6px 0 12px}
-  .content .page-head h1{font-size:19px}
-  .sale-split{grid-template-columns:1fr!important}
-}
+
 .modal-bg-danger{background:rgba(80,0,0,.72)!important}
 .modal.danger-pulse{border-color:var(--red)!important;box-shadow:0 0 60px rgba(255,69,58,.5),var(--shadow-lg);animation:dangerPulse 1.6s ease-in-out infinite}
 @keyframes dangerPulse{0%,100%{box-shadow:0 0 40px rgba(255,69,58,.35),var(--shadow-lg);border-color:rgba(255,69,58,.7)}50%{box-shadow:0 0 90px rgba(255,69,58,.9),var(--shadow-lg);border-color:var(--red)}}
@@ -245,10 +237,8 @@ select.ios-input{cursor:pointer;appearance:none;background-image:url("data:image
 [data-theme="light"] .danger-text{color:#c92a20}
 .danger-zone-card{border:1.5px solid rgba(255,69,58,.55)!important;background:linear-gradient(135deg,rgba(255,69,58,.1),rgba(255,69,58,.03))!important}
 .danger-zone-card h3{color:var(--red)}
-#search-results-wrap{margin-bottom:0}
 .search-result{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-radius:var(--radius-md);margin-bottom:6px;background:var(--glass-hover);transition:all .15s;border:1px solid transparent;cursor:pointer}
 .search-result:hover{background:var(--glass-strong);border-color:var(--glass-border-strong);transform:translateX(2px)}
-.search-result:last-child{margin-bottom:0}
 body.sidebar-hidden .sidebar{width:0!important;min-width:0!important;padding:0!important;opacity:0;border-width:0;pointer-events:none;margin-right:-12px}
 body.sidebar-hidden .brand{padding:0}
 .sidebar-collapse-btn{width:26px;height:26px;border-radius:7px;background:var(--glass-hover);color:var(--text-2);display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0;transition:all .15s;border:1px solid var(--glass-border)}
@@ -260,7 +250,6 @@ body.sidebar-hidden .content{padding-left:54px}
 .logo-preview{width:72px;height:72px;border-radius:14px;object-fit:cover;background:var(--glass-hover);border:2px solid var(--glass-border);display:flex;align-items:center;justify-content:center;font-size:28px;flex-shrink:0}
 .logo-row{display:flex;align-items:center;gap:14px;padding:12px;border-radius:var(--radius-md);background:var(--glass-hover);margin-bottom:12px}
 .receipt-logo{max-width:70px;max-height:70px;margin:0 auto 6px;display:block;filter:grayscale(100%)}
-/* 🆕 Sale complete with big change */
 .sale-done-card{max-width:460px;text-align:center;padding:28px}
 .sale-done-icon{font-size:64px;margin:0 0 12px;animation:successPop .5s cubic-bezier(.16,1.4,.3,1)}
 @keyframes successPop{0%{transform:scale(.4);opacity:0}60%{transform:scale(1.15)}100%{transform:scale(1);opacity:1}}
@@ -320,20 +309,23 @@ body.sidebar-hidden .content{padding-left:54px}
 .firebase-badge{position:fixed;bottom:14px;right:14px;z-index:400;padding:6px 12px;border-radius:999px;font-size:10.5px;font-weight:700;background:rgba(48,209,88,.15);color:var(--green);border:1px solid rgba(48,209,88,.4);backdrop-filter:var(--blur);display:flex;align-items:center;gap:6px;letter-spacing:.02em}
 .firebase-badge.offline{background:rgba(255,159,10,.15);color:var(--orange);border-color:rgba(255,159,10,.4)}
 .firebase-badge .fb-dot{width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor;animation:pulse 2s infinite}
-/* 🆕 Sale split view */
+
+/* 🆕 SALE LAYOUT (bill details moved to left, cart bigger) */
 .sale-split{flex:1;display:grid;grid-template-columns:1.15fr .85fr;gap:12px;min-height:0;overflow:hidden}
-.sale-left{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.sale-left{display:flex;flex-direction:column;min-height:0;overflow:hidden;gap:10px}
 .sale-right{display:flex;flex-direction:column;min-height:0;overflow:hidden}
 .sale-search-area{flex-shrink:0}
-.sale-results-area{flex:1;overflow-y:auto;min-height:0;margin-top:10px}
-.sale-cart-area{flex:1;overflow-y:auto;min-height:0;padding-right:4px}
-.barcode-box{display:flex;align-items:center;gap:8px;padding:8px 12px;background:rgba(48,209,88,.08);border:1px dashed rgba(48,209,88,.5);border-radius:var(--radius-md);margin-bottom:10px;font-size:11px;color:var(--green);font-weight:600}
-.barcode-box .barcode-ico{font-size:16px}
-.result-card{display:flex;justify-content:space-between;align-items:center;padding:11px 13px;border-radius:var(--radius-md);margin-bottom:6px;background:var(--glass-hover);transition:all .15s;border:1px solid transparent;cursor:pointer}
+.sale-results-area{flex:1;overflow-y:auto;min-height:80px}
+.sale-cart-area{flex:1;overflow-y:auto;min-height:100px;padding-right:4px}
+.bill-fields{flex-shrink:0;border-top:1px solid var(--separator);padding-top:10px}
+.bill-fields-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);margin-bottom:8px}
+.cart-footer{flex-shrink:0;border-top:1px solid var(--separator);padding-top:10px;margin-top:8px}
+.result-card{display:flex;justify-content:space-between;align-items:center;padding:11px 13px;border-radius:var(--radius-md);margin-bottom:6px;background:var(--glass-hover);transition:all .15s;border:1px solid transparent;cursor:pointer;gap:8px}
 .result-card:hover{background:var(--glass-strong);border-color:var(--blue);transform:translateX(2px)}
 .result-card:active{transform:translateX(1px) scale(.995)}
 .result-card.disabled{opacity:.5;cursor:default}
-/* 🆕 Bill search view */
+
+/* BILL SEARCH */
 .bill-search-hero{padding:18px;border-radius:var(--radius-xl);background:linear-gradient(135deg,rgba(10,132,255,.15),rgba(191,90,242,.1));border:1px solid rgba(10,132,255,.3);margin-bottom:14px}
 .bill-search-hero h3{font-size:14px;margin-bottom:6px;letter-spacing:-.01em}
 .bill-search-hero p{font-size:11.5px;color:var(--text-2);margin-bottom:12px;line-height:1.5}
@@ -341,8 +333,144 @@ body.sidebar-hidden .content{padding-left:54px}
 .bill-match:hover{background:var(--glass-strong);border-color:var(--blue);transform:translateY(-1px)}
 .bill-match-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap;margin-bottom:6px}
 .bill-match-items{display:flex;flex-direction:column;gap:4px;margin-top:8px;padding-top:8px;border-top:1px dashed var(--separator)}
-.bill-match-item{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11.5px}
+.bill-match-item{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11.5px;flex-wrap:wrap}
 .bill-match-item.matched{background:rgba(48,209,88,.1);padding:5px 8px;border-radius:6px;font-weight:600}
+
+/* 🆕 MOBILE BOTTOM TABS */
+.mobile-tabs{display:none}
+
+/* 🆕 MOBILE — iPhone 12 mini (~375px) to Samsung A06 (~360px) */
+@media (max-width: 768px){
+  html,body{overflow:auto;height:auto;min-height:100%}
+  .layout{padding:0;gap:0;height:auto;min-height:100vh;display:block}
+  
+  /* Sidebar becomes off-canvas drawer */
+  .sidebar{
+    position:fixed;left:0;top:0;bottom:0;
+    width:270px;max-width:82vw;
+    z-index:960;border-radius:0;
+    margin:0;padding:14px 10px;
+    transform:translateX(-100%);
+    transition:transform .3s cubic-bezier(.4,0,.2,1);
+    box-shadow:8px 0 40px rgba(0,0,0,.55);
+  }
+  body.sidebar-open-mobile .sidebar{transform:translateX(0)}
+  body.sidebar-open-mobile::after{
+    content:'';position:fixed;inset:0;background:rgba(0,0,0,.55);
+    z-index:950;backdrop-filter:blur(4px);
+    animation:fadeIn .2s;
+  }
+  /* Reset desktop collapsed state */
+  body.sidebar-hidden .sidebar{width:270px!important;padding:14px 10px!important;opacity:1;border-width:1px;margin-right:0;pointer-events:auto}
+  body.sidebar-hidden .brand{padding:6px 8px 16px}
+  body.sidebar-hidden .content{padding-left:0}
+  body.sidebar-hidden #sidebar-show-btn{display:none}
+  
+  .sidebar-collapse-btn{display:none}
+  #sidebar-show-btn{display:none!important}
+  
+  /* Content area — scrollable, bottom padding for tabs */
+  .content{padding:12px;padding-bottom:82px;overflow:visible;height:auto;min-height:100vh}
+  .view-shell{min-height:calc(100vh - 94px);gap:10px}
+  .view-scroll{overflow:visible;padding-right:0}
+  
+  /* Bottom tabs */
+  .mobile-tabs{
+    display:flex;
+    position:fixed;bottom:0;left:0;right:0;
+    background:var(--glass-strong);
+    backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);
+    border-top:1px solid var(--glass-border-strong);
+    z-index:800;
+    padding:6px 4px calc(6px + env(safe-area-inset-bottom));
+    justify-content:space-around;align-items:stretch;
+  }
+  .mobile-tabs a{
+    flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;
+    padding:6px 2px;border-radius:10px;
+    color:var(--text-3);text-decoration:none;
+    font-size:9.5px;font-weight:700;
+    cursor:pointer;transition:all .15s;min-width:0;
+    -webkit-tap-highlight-color:transparent;
+  }
+  .mobile-tabs a.active{color:var(--blue);background:rgba(10,132,255,.12)}
+  .mobile-tabs a:active{transform:scale(.94)}
+  .mobile-tabs .mt-icon{font-size:19px;line-height:1}
+  .mobile-tabs .mt-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;letter-spacing:0}
+  
+  /* Sales layout stack on mobile */
+  .sale-split{grid-template-columns:1fr!important;height:auto;overflow:visible;gap:10px}
+  .sale-left,.sale-right{overflow:visible;min-height:0}
+  .sale-results-area{max-height:280px;min-height:80px}
+  .sale-cart-area{max-height:360px;min-height:100px}
+  .sale-right{padding-top:14px}
+  
+  /* Page head */
+  .page-head h1{font-size:20px}
+  .page-head{align-items:flex-start}
+  
+  /* Stat grid */
+  .stat-grid{grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
+  .stat{padding:12px}
+  .stat-value{font-size:18px}
+  .stat-icon{font-size:18px;margin-bottom:6px}
+  
+  /* Tables scroll horizontally */
+  .ios-table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .ios-table{min-width:560px}
+  
+  /* Modal */
+  .modal{padding:18px;max-height:92vh;border-radius:16px}
+  .modal h2{font-size:15px}
+  .modal-bg{padding:12px;align-items:flex-end}
+  
+  /* Firebase badge above tabs */
+  .firebase-badge{bottom:82px;right:10px;font-size:9.5px;padding:5px 10px}
+  
+  /* Toast */
+  .toast{font-size:12px;padding:10px 15px;max-width:90vw;text-align:center}
+  #toast-wrap{top:14px}
+  
+  /* Login */
+  .login-card{padding:24px 20px}
+  .login-card h1{font-size:17px}
+  .login-card .brand-logo{width:60px;height:60px}
+  
+  /* Forms in grid — collapse to 1 col */
+  .form-grid [style*="grid-template-columns:1fr 1fr"],
+  .form-grid [style*="grid-template-columns:1fr 1fr 1fr"]{grid-template-columns:1fr!important}
+  
+  /* Sale complete modal */
+  .sale-done-card{padding:22px}
+  .sale-change-hero .val{font-size:32px}
+  .sale-done-amount{font-size:24px}
+}
+
+@media (max-width: 400px){
+  .content{padding:10px;padding-bottom:80px}
+  .stat-grid{grid-template-columns:repeat(2,1fr)}
+  .stat{padding:11px;border-radius:14px}
+  .stat-value{font-size:16px}
+  .stat-label{font-size:9px;letter-spacing:.04em}
+  .stat-sub{font-size:9.5px}
+  .stat-icon{font-size:17px;margin-bottom:5px}
+  .page-head h1{font-size:18px}
+  .ios-pill{padding:7px 12px;font-size:12px}
+  .ios-pill.sm{padding:5px 10px;font-size:11px}
+  .mobile-tabs a{font-size:9px}
+  .mobile-tabs .mt-icon{font-size:17px}
+  .card{padding:13px;border-radius:14px}
+  .total-val{font-size:19px}
+  .change-val{font-size:24px}
+  .ios-search{height:36px;font-size:12px}
+}
+
+@media (max-width: 360px){
+  .stat-grid{grid-template-columns:1fr 1fr;gap:6px}
+  .stat-value{font-size:15px}
+  .page-head h1{font-size:17px}
+  .mobile-tabs .mt-label{font-size:8.5px}
+}
 </style>
 </head>
 <body>
@@ -399,9 +527,8 @@ body.sidebar-hidden .content{padding-left:54px}
       <button class="ios-btn" onclick="toggleTheme()">🌗 <span>Theme</span></button>
       <button class="ios-btn danger" onclick="doLogout()">🚪 <span>Logout</span></button>
     </div>
-    <!-- 🆕 Footer: version + clickable links -->
     <div class="sidebar-footer">
-      <div><span class="version-chip" id="version-chip">v2.1</span></div>
+      <div><span class="version-chip" id="version-chip">v2.2</span></div>
       <div class="footer-line">
         powered by <a class="footer-link" href="https://www.lookmobile.online" target="_blank" rel="noopener">Look Mobile</a>
       </div>
@@ -414,6 +541,7 @@ body.sidebar-hidden .content{padding-left:54px}
 </div>
 
 <button id="sidebar-show-btn" onclick="toggleSidebar()" title="Show menu">☰</button>
+<nav class="mobile-tabs" id="mobile-tabs"></nav>
 
 <div id="toast-wrap"></div>
 <div id="modal-root"></div>
@@ -438,14 +566,14 @@ firebase.initializeApp(firebaseConfig);
 const fbDB = firebase.database();
 const fbRef = fbDB.ref('pos_data');
 
-const API = '/api/data';
 const LS_KEY = 'phone_shop_pos_cache';
-const LS_SAFE_KEY = 'phone_shop_pos_safety_backup'; // 🛡️ Never lost
-const POS_VERSION = 'v2.1';
+const LS_SAFE_KEY = 'phone_shop_pos_safety_backup';
+const POS_VERSION = 'v2.2';
 
 const DEFAULT_SETTINGS = {
   shop_name:'PHONE HUB', shop_address:'123 Main Street, Colombo',
-  shop_phone:'077-0000000', currency:'LKR', low_stock:2, theme:'dark', shop_logo: null
+  shop_phone:'077-0000000', currency:'LKR', low_stock:2, theme:'dark', shop_logo: null,
+  print_size: '58mm'
 };
 const ROLE_PERMS = {
   admin:['dashboard','sales','phonestock','stock','repairs','shoprepair','customers','reports','billsearch','settings'],
@@ -453,11 +581,11 @@ const ROLE_PERMS = {
   cashier:['dashboard','sales','phonestock','stock','repairs','shoprepair','customers','billsearch']
 };
 const VIEW_META = {
-  dashboard:{icon:'🏠',label:'Dashboard'}, sales:{icon:'🛒',label:'Sales'},
-  phonestock:{icon:'📱',label:'Phone Stock'}, stock:{icon:'📦',label:'Stock'},
-  repairs:{icon:'🔧',label:'Repairs'}, shoprepair:{icon:'🏪',label:'Shop Repair'},
+  dashboard:{icon:'🏠',label:'Home'}, sales:{icon:'🛒',label:'Sale'},
+  phonestock:{icon:'📱',label:'Phones'}, stock:{icon:'📦',label:'Stock'},
+  repairs:{icon:'🔧',label:'Repairs'}, shoprepair:{icon:'🏪',label:'Shops'},
   customers:{icon:'👥',label:'Customers'}, reports:{icon:'📊',label:'Reports'},
-  billsearch:{icon:'🔎',label:'Bill Search'},
+  billsearch:{icon:'🔎',label:'Bills'},
   settings:{icon:'⚙️',label:'Settings'}
 };
 const ACC_CATEGORIES = ['Tempered Glass','Housing','Back Cover','Charger','Cable','Earphone','Battery','Power Bank','Memory Card','SIM Ejector','Phone Case','Screen Guard','Camera Lens','Speaker','Display','Other'];
@@ -475,14 +603,20 @@ let fbConnected = false;
 let fbInitDone = false;
 let syncing = false;
 
-function canSeeCost() {
-  return currentUser && (currentUser.role === 'admin' || currentUser.role === 'manager');
-}
+function isMobile() { return window.matchMedia('(max-width: 768px)').matches; }
+function canSeeCost() { return currentUser && (currentUser.role === 'admin' || currentUser.role === 'manager'); }
 
 /* SIDEBAR */
 function toggleSidebar() {
-  const hidden = document.body.classList.toggle('sidebar-hidden');
-  try { localStorage.setItem('pos_sidebar_hidden', hidden ? '1' : '0'); } catch(e) {}
+  if (isMobile()) {
+    document.body.classList.toggle('sidebar-open-mobile');
+  } else {
+    const hidden = document.body.classList.toggle('sidebar-hidden');
+    try { localStorage.setItem('pos_sidebar_hidden', hidden ? '1' : '0'); } catch(e) {}
+  }
+}
+function closeMobileSidebar() {
+  if (isMobile()) document.body.classList.remove('sidebar-open-mobile');
 }
 function initSidebar() {
   try { if (localStorage.getItem('pos_sidebar_hidden') === '1') document.body.classList.add('sidebar-hidden'); } catch(e) {}
@@ -490,11 +624,10 @@ function initSidebar() {
 initSidebar();
 
 /* ═══════════════════════════════════════════════════════════
-   🛡️ SAFETY BACKUP — Never lose data
+   🛡️ SAFETY BACKUP
    ═══════════════════════════════════════════════════════════ */
 function saveSafetyBackup() {
   try {
-    // Only save if DB has meaningful data
     if (!DB || !DB.users || DB.users.length === 0) return;
     const backup = { data: DB, ts: Date.now(), version: POS_VERSION };
     localStorage.setItem(LS_SAFE_KEY, JSON.stringify(backup));
@@ -505,9 +638,7 @@ function loadSafetyBackup() {
     const raw = localStorage.getItem(LS_SAFE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    if (parsed && parsed.data && parsed.data.products && parsed.data.users && parsed.data.users.length > 0) {
-      return parsed.data;
-    }
+    if (parsed && parsed.data && parsed.data.products && parsed.data.users && parsed.data.users.length > 0) return parsed.data;
   } catch(e) {}
   return null;
 }
@@ -527,45 +658,24 @@ async function manualSync() {
   if (syncing) { toast('Sync already in progress...', 'info', 1500); return; }
   if (!DB) { toast('Data not loaded yet', 'warn'); return; }
   if (!isDBValid(DB)) { toast('❌ Data invalid — refusing to sync', 'error', 3500); return; }
-
-  const ok = confirm(
-    '🔄  Force Sync with Firebase?\n' +
-    '─────────────────────────\n' +
-    '• Push local changes to cloud\n' +
-    '• Pull latest data back\n' +
-    '• Refresh screen\n\n' +
-    'Safe to run anytime. Continue?'
-  );
+  const ok = confirm('🔄  Force Sync with Firebase?\n─────────────────────────\n• Push local changes to cloud\n• Pull latest data back\n• Refresh screen\n\nSafe to run anytime. Continue?');
   if (!ok) return;
-
   syncing = true;
   const icon = document.getElementById('sync-icon');
   if (icon) icon.classList.add('spinning');
-
   try {
     updateStorageStatus('saving');
     toast('Syncing with Firebase...', 'info', 1500);
-
     DB._lastSaved = Date.now();
     saveSafetyBackup();
     await fbRef.set(DB);
     await new Promise(r => setTimeout(r, 500));
-
     const snapshot = await fbRef.once('value');
     const remote = snapshot.val();
     if (isDBValid(remote)) {
-      DB = remote;
-      migrateDB();
-      cacheLocal();
-      saveSafetyBackup();
+      DB = remote; migrateDB(); cacheLocal(); saveSafetyBackup();
     }
-
-    if (currentUser) {
-      updateUserBox();
-      buildNav();
-      render();
-    }
-
+    if (currentUser) { updateUserBox(); buildNav(); buildMobileTabs(); render(); }
     updateStorageStatus('connected');
     toast('✅ Synced successfully', 'success', 2500);
   } catch (e) {
@@ -579,99 +689,57 @@ async function manualSync() {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   🔥 FIREBASE SERVER — with safety
+   🔥 FIREBASE SERVER
    ═══════════════════════════════════════════════════════════ */
 async function loadFromServer() {
   try {
-    // 1️⃣ Try cache first (instant render)
     const cached = loadCache();
-    if (isDBValid(cached)) {
-      DB = cached;
-      migrateDB();
-    }
-
-    // 2️⃣ Fetch from Firebase
+    if (isDBValid(cached)) { DB = cached; migrateDB(); }
     const snapshot = await fbRef.once('value');
     const data = snapshot.val();
-
-    // 🛡️ If remote is valid, use it (single source of truth)
     if (isDBValid(data)) {
-      DB = data;
-      migrateDB();
-      cacheLocal();
-      saveSafetyBackup();
-      fbConnected = true;
-      updateStorageStatus('connected');
+      DB = data; migrateDB(); cacheLocal(); saveSafetyBackup();
+      fbConnected = true; updateStorageStatus('connected');
       return { ok: true, hasData: true };
     }
-
-    // 🛡️ Remote empty/invalid but local has data → push local
     if (isDBValid(DB)) {
       console.log('⚠️ Firebase empty — pushing local data');
       await saveToServer(true);
-      fbConnected = true;
-      updateStorageStatus('connected');
+      fbConnected = true; updateStorageStatus('connected');
       return { ok: true, hasData: true, pushed: true };
     }
-
-    // 🛡️ Both empty but safety backup exists → restore from it
     const backup = loadSafetyBackup();
     if (isDBValid(backup)) {
       console.log('♻️ Restoring from safety backup');
-      DB = backup;
-      migrateDB();
-      cacheLocal();
+      DB = backup; migrateDB(); cacheLocal();
       await saveToServer(true);
-      fbConnected = true;
-      updateStorageStatus('connected');
+      fbConnected = true; updateStorageStatus('connected');
       toast('♻️ Data restored from backup', 'success', 3000);
       return { ok: true, hasData: true, restored: true };
     }
-
-    // Truly first-time — create fresh
-    DB = createFreshDB();
-    migrateDB();
-    cacheLocal();
+    DB = createFreshDB(); migrateDB(); cacheLocal();
     await saveToServer(true);
-    fbConnected = true;
-    updateStorageStatus('connected');
+    fbConnected = true; updateStorageStatus('connected');
     return { ok: true, hasData: false };
   } catch (e) {
     console.error('Firebase load failed:', e);
-    fbConnected = false;
-    updateStorageStatus('disconnected');
-
+    fbConnected = false; updateStorageStatus('disconnected');
     if (isDBValid(DB)) return { ok: true, hasData: true, offline: true };
     const backup = loadSafetyBackup();
-    if (isDBValid(backup)) {
-      DB = backup; migrateDB();
-      return { ok: true, hasData: true, offline: true, restored: true };
-    }
+    if (isDBValid(backup)) { DB = backup; migrateDB(); return { ok: true, hasData: true, offline: true, restored: true }; }
     return { ok: false, error: e.message };
   }
 }
-
 async function saveToServer(immediate = false) {
   if (!DB) return;
-
-  // 🛡️ CRITICAL SAFETY: Never save invalid/empty DB
-  if (!isDBValid(DB)) {
-    console.warn('🚫 Save blocked: DB validation failed', {
-      hasUsers: Array.isArray(DB?.users) && DB.users.length > 0,
-      hasProducts: Array.isArray(DB?.products)
-    });
-    return;
-  }
-
+  if (!isDBValid(DB)) { console.warn('🚫 Save blocked: DB validation failed'); return; }
   cacheLocal();
   saveSafetyBackup();
-
   if (!immediate) {
     if (writeTimer) clearTimeout(writeTimer);
     writeTimer = setTimeout(() => saveToServer(true), 250);
     return;
   }
-
   try {
     updateStorageStatus('saving');
     DB._lastSaved = Date.now();
@@ -684,7 +752,6 @@ async function saveToServer(immediate = false) {
     console.error('Firebase save failed:', e);
   }
 }
-
 function updateStorageStatus(state) {
   const dot = document.getElementById('storage-dot');
   const label = document.getElementById('storage-label');
@@ -706,50 +773,36 @@ function updateStorageStatus(state) {
     }
   }
 }
-
 function cacheLocal() { try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); } catch(e) {} }
 function loadCache() {
   try { const raw = localStorage.getItem(LS_KEY); if (raw) return JSON.parse(raw); } catch(e) {}
   return null;
 }
 
-/* ═══════════════════════════════════════════════════════════
-   REALTIME SYNC — with safeguards
-   ═══════════════════════════════════════════════════════════ */
+/* REALTIME SYNC */
 function startRealtimeSync() {
   fbDB.ref('.info/connected').on('value', (snap) => {
     fbConnected = snap.val() === true;
     if (!syncing) updateStorageStatus(fbConnected ? 'connected' : 'disconnected');
   });
-
   fbRef.on('value', (snapshot) => {
     if (!fbInitDone) return;
     if (syncing) return;
     const remote = snapshot.val();
-    if (!isDBValid(remote)) return; // 🛡️ Ignore invalid remote
-
+    if (!isDBValid(remote)) return;
     const localSum = (DB.ids?.sales || 0) + (DB.ids?.products || 0);
     const remoteSum = (remote.ids?.sales || 0) + (remote.ids?.products || 0);
     const localSaleCount = (DB.sales || []).length;
     const remoteSaleCount = (remote.sales || []).length;
     const localCustCount = (DB.customers || []).length;
     const remoteCustCount = (remote.customers || []).length;
-
     if (localSum === remoteSum && localSaleCount === remoteSaleCount && localCustCount === remoteCustCount) return;
-
     const modalRoot = document.getElementById('modal-root');
     const modalOpen = modalRoot && modalRoot.innerHTML.trim().length > 0;
-
-    console.log('🔄 Syncing remote changes...', modalOpen ? '(silent - modal open)' : '');
-    DB = remote;
-    migrateDB();
-    cacheLocal();
-    saveSafetyBackup();
-
+    DB = remote; migrateDB(); cacheLocal(); saveSafetyBackup();
     if (modalOpen) return;
-
     try {
-      updateUserBox(); buildNav(); render();
+      updateUserBox(); buildNav(); buildMobileTabs(); render();
       updateStorageStatus('connected');
       toast('Synced from another device', 'info', 1800);
     } catch(e) { console.error(e); }
@@ -775,11 +828,12 @@ function initUsers(d) {
   ];
   d.ids.users = 3;
 }
-function makeProductCode(id)   { return 'PHN-' + String(id).padStart(4,'0'); }
-function makeAccessoryCode(id) { return 'ACC-' + String(id).padStart(4,'0'); }
+function makeProductCode(id){ return 'PHN-' + String(id).padStart(4,'0'); }
+function makeAccessoryCode(id){ return 'ACC-' + String(id).padStart(4,'0'); }
 function migrateDB() {
   if (!DB.settings) DB.settings = {...DEFAULT_SETTINGS};
   if (DB.settings.shop_logo === undefined) DB.settings.shop_logo = null;
+  if (!DB.settings.print_size) DB.settings.print_size = '58mm';
   if (!DB.users || !DB.users.length) initUsers(DB);
   if (!DB.ids) DB.ids = {products:1,stock_units:1,accessories:1,customers:1,sales:1,sale_items:1,repairs:1,credit_payments:1,returns:1,stock_adjustments:1,shops:1,shop_repairs:1,shop_payments:1,users:DB.users.length+1};
   ['accessories','credit_payments','returns','stock_adjustments','shops','shop_repairs','shop_payments'].forEach(k => { if (!DB.ids[k]) DB.ids[k] = 1; });
@@ -788,9 +842,9 @@ function migrateDB() {
   DB.accessories.forEach(a => {
     if (!a.code) a.code = makeAccessoryCode(a.id);
     if (a.warranty_months === undefined) a.warranty_months = 0;
-    if (a.barcode === undefined) a.barcode = '';  // 🆕
+    if (a.barcode === undefined) a.barcode = '';
   });
-  DB.stock_units.forEach(u => { if (u.barcode === undefined) u.barcode = ''; }); // 🆕
+  DB.stock_units.forEach(u => { if (u.barcode === undefined) u.barcode = ''; });
   DB.customers.forEach(c => { if (c.balance === undefined) c.balance = 0; if (c.id_number === undefined) c.id_number = ''; });
   DB.returns.forEach(r => {
     if (r.condition === undefined) r.condition = 'damaged';
@@ -806,7 +860,7 @@ function migrateDB() {
     }
     if (it.accessory_id === undefined) it.accessory_id = null;
     if (it.stock_unit_id === undefined) it.stock_unit_id = null;
-    if (it.barcode === undefined) it.barcode = ''; // 🆕
+    if (it.barcode === undefined) it.barcode = '';
   });
   DB.users.forEach(u => { if (u.photo === undefined) u.photo = null; });
   DB.shops.forEach(s => { if (s.customer_id === undefined) s.customer_id = null; });
@@ -1084,7 +1138,7 @@ function doLogin() {
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('app-layout').classList.remove('hidden');
   document.getElementById('login-pass').value = '';
-  updateUserBox(); buildNav();
+  updateUserBox(); buildNav(); buildMobileTabs();
   currentView = firstAllowedView(); render();
   toast(`Welcome, ${user.name}!`, 'success');
 }
@@ -1097,6 +1151,7 @@ function doLogout() {
   showLogin();
 }
 function showSwitchAccount() {
+  closeMobileSidebar();
   const users = DB.users.filter(u => u.active);
   const rows = users.map(u => {
     const isMe = currentUser && u.id === currentUser.id;
@@ -1116,7 +1171,7 @@ function promptSwitchTo(userId) {
     if (hashPassword(pass) !== u.password) { toast('Wrong password','error'); return false; }
     currentUser = u;
     sessionStorage.setItem('pos_user_id', u.id);
-    updateUserBox(); buildNav();
+    updateUserBox(); buildNav(); buildMobileTabs();
     currentView = firstAllowedView(); render();
     toast(`Switched to ${u.name}`,'success');
   }, 'Switch');
@@ -1229,6 +1284,31 @@ function buildNav() {
     return `<a data-view="${k}" class="${k===currentView?'active':''}"><span class="nav-icon">${m.icon}</span><span>${m.label}</span></a>`;
   }).join('');
 }
+function buildMobileTabs() {
+  const tabs = document.getElementById('mobile-tabs');
+  if (!tabs) return;
+  const perms = ROLE_PERMS[currentUser.role]||[];
+  const priority = ['dashboard','sales','phonestock','repairs','stock','customers','reports','settings','billsearch','shoprepair'];
+  const shown = priority.filter(k => perms.includes(k)).slice(0, 4);
+  let html = shown.map(k => {
+    const m = VIEW_META[k];
+    return `<a data-view="${k}" class="${k===currentView?'active':''}"><span class="mt-icon">${m.icon}</span><span class="mt-label">${m.label}</span></a>`;
+  }).join('');
+  html += `<a data-more="1" class="more-btn"><span class="mt-icon">☰</span><span class="mt-label">More</span></a>`;
+  tabs.innerHTML = html;
+  tabs.querySelectorAll('a[data-view]').forEach(a => {
+    a.onclick = () => {
+      const v = a.dataset.view;
+      if (!can(v)) return;
+      currentView = v;
+      document.querySelectorAll('#nav a').forEach(x => x.classList.toggle('active', x.dataset.view === v));
+      render();
+      buildMobileTabs();
+    };
+  });
+  const moreBtn = tabs.querySelector('a[data-more]');
+  if (moreBtn) moreBtn.onclick = () => toggleSidebar();
+}
 document.getElementById('nav').addEventListener('click', e => {
   const a = e.target.closest('a[data-view]'); if (!a) return;
   const v = a.dataset.view;
@@ -1236,6 +1316,8 @@ document.getElementById('nav').addEventListener('click', e => {
   currentView = v;
   document.querySelectorAll('#nav a').forEach(x => x.classList.toggle('active', x===a));
   render();
+  buildMobileTabs();
+  closeMobileSidebar();
 });
 function render() {
   if (!currentUser) return;
@@ -1245,6 +1327,7 @@ function render() {
   (views[currentView]||renderDashboard)(c);
   applyLogo();
   document.getElementById('side-shop-name').textContent = DB.settings.shop_name;
+  buildMobileTabs();
 }
 function navigateTo(view) {
   if (!can(view)) { toast('Access denied','error'); return; }
@@ -1307,7 +1390,7 @@ function renderDashboard(root) {
           <div class="stat" onclick="navigateTo('phonestock')"><div class="stat-icon">💰</div><div class="stat-label">Phone Stock (Cost)</div><div class="stat-value primary-c">${fmtInt(phoneStockCost)}</div><div class="stat-sub">${costVisible ? `sale: ${fmtInt(phoneStockSale)}` : 'cost value'}</div></div>
           <div class="stat" onclick="navigateTo('stock')"><div class="stat-icon">💵</div><div class="stat-label">Stock (Cost)</div><div class="stat-value primary-c">${fmtInt(accessoryStockCost)}</div><div class="stat-sub">${costVisible ? `sale: ${fmtInt(accessoryStockSale)}` : 'cost value'}</div></div>
           ${returnsToday > 0 ? `<div class="stat" onclick="navigateTo('reports')" style="border-color:rgba(255,69,58,.5)"><div class="stat-icon">↩️</div><div class="stat-label">Returns Today</div><div class="stat-value danger-c">${fmtInt(returnsToday)}</div><div class="stat-sub">${todayReturns.length} item${todayReturns.length!==1?'s':''}${restockedToday>0?` · ${restockedToday} restocked`:''}</div></div>` : ''}
-          <div class="stat" onclick="navigateTo('customers')" style="${totalCredit>0?'border-color:rgba(255,159,10,.5)':''}"><div class="stat-icon">💳</div><div class="stat-label">Total Credit (Higayak)</div><div class="stat-value ${totalCredit>0?'warn':''}">${fmtInt(totalCredit)}</div><div class="stat-sub">${creditCount} customer${creditCount!==1?'s':''} owe</div></div>
+          <div class="stat" onclick="navigateTo('customers')" style="${totalCredit>0?'border-color:rgba(255,159,10,.5)':''}"><div class="stat-icon">💳</div><div class="stat-label">Total Credit</div><div class="stat-value ${totalCredit>0?'warn':''}">${fmtInt(totalCredit)}</div><div class="stat-sub">${creditCount} customer${creditCount!==1?'s':''} owe</div></div>
           <div class="stat" onclick="navigateTo('shoprepair')" style="${totalShopOutstanding>0?'border-color:rgba(255,69,58,.5)':''}"><div class="stat-icon">🏪</div><div class="stat-label">Shop Outstanding</div><div class="stat-value ${totalShopOutstanding>0?'danger-c':''}">${fmtInt(totalShopOutstanding)}</div><div class="stat-sub">${shopOutstandingCount} shop${shopOutstandingCount!==1?'s':''} owe</div></div>
           <div class="stat" onclick="navigateTo('repairs')"><div class="stat-icon">🔧</div><div class="stat-label">Active Repairs</div><div class="stat-value warn">${activeRepairs}</div><div class="stat-sub">not delivered</div></div>
           <div class="stat" onclick="navigateTo('phonestock')"><div class="stat-icon">📱</div><div class="stat-label">Phones In Stock</div><div class="stat-value primary-c">${inStock}</div><div class="stat-sub">units available</div></div>
@@ -1315,11 +1398,11 @@ function renderDashboard(root) {
           <div class="stat" onclick="navigateTo('billsearch')"><div class="stat-icon">🔎</div><div class="stat-label">Bill Search</div><div class="stat-value primary-c">${DB.sales.length}</div><div class="stat-sub">total invoices</div></div>
         </div>
         ${(totalCredit > 0 || totalShopOutstanding > 0) ? `
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px" class="dash-2col">
           ${totalCredit > 0 ? `<div class="card" style="border-color:rgba(255,159,10,.5);cursor:pointer" onclick="navigateTo('customers')"><h3>💳 Customer Credit <span style="float:right;color:var(--blue);font-size:12px">View all ›</span></h3><ul class="list">${DB.customers.filter(c=>(Number(c.balance)||0) > 0).sort((a,b)=>b.balance-a.balance).slice(0,6).map(c=>`<li onclick="event.stopPropagation();recordCreditPayment(${c.id})" style="cursor:pointer"><div class="l-info"><div class="strong">${esc(c.name)}</div><div class="muted small">${esc(c.phone||'-')}</div></div><div class="row gap"><span class="danger-c strong">${fmtInt(c.balance)}</span><button class="ios-pill orange sm">Pay</button></div></li>`).join('')}</ul></div>` : ''}
           ${totalShopOutstanding > 0 ? `<div class="card" style="border-color:rgba(255,69,58,.5);cursor:pointer" onclick="navigateTo('shoprepair')"><h3>🏪 Shop Outstanding <span style="float:right;color:var(--blue);font-size:12px">View all ›</span></h3><ul class="list">${DB.shops.filter(s=>calcShopOutstanding(s) > 0.5).sort((a,b)=>calcShopOutstanding(b)-calcShopOutstanding(a)).slice(0,6).map(s=>`<li><div class="l-info"><div class="strong">${esc(s.name)}</div><div class="muted small">${esc(s.phone||'-')}</div></div><div class="row gap"><span class="danger-c strong">${fmtInt(calcShopOutstanding(s))}</span></div></li>`).join('')}</ul></div>` : ''}
         </div>` : ''}
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px" class="dash-2col">
           <div class="card" style="cursor:pointer" onclick="navigateTo('reports')">
             <h3>Recent Sales <span style="float:right;color:var(--blue);font-size:12px">View all ›</span></h3>
             ${recentSales.length ? `<ul class="list">${recentSales.map(s=>{ const c = DB.customers.find(x=>x.id===s.customer_id); const rt = getSaleReturnTotal(s.id); return `<li><div class="l-info"><div class="strong">${esc(s.invoice_no)}${rt>0?' <span class="danger-c small">↩</span>':''}</div><div class="muted small">${esc(c?.name||'Walk-in')}${s.balance>0?` · <span class="warn">bal ${fmtInt(s.balance)}</span>`:''}</div></div><div class="success strong">${fmtInt(s.total)}</div></li>`; }).join('')}</ul>` : '<p class="muted pad center">No sales yet</p>'}
@@ -1336,11 +1419,12 @@ function renderDashboard(root) {
 }
 function dashSearch(v){ dashQuery = v; renderDashboard(document.getElementById('content')); }
 
-/* SALES — Two-pane layout + barcode + Enter key + change */
+/* ═══════════════════════════════════════════════════════════
+   🆕 SALES — bill details moved to LEFT, cart bigger
+   ═══════════════════════════════════════════════════════════ */
 let cart = [];
 let salesTab = 'phones';
 let salesSearchQ = '';
-let lastPaidValue = 0;
 
 function renderSales(root) {
   cart = []; salesSearchQ = '';
@@ -1350,7 +1434,7 @@ function renderSales(root) {
         <div class="head-actions"><button class="ios-pill teal sm" onclick="addReloadToCart()">💳 Manual Item</button></div>
       </div>
       <div class="sale-split">
-        <!-- LEFT: Search -->
+        <!-- LEFT: Search + Bill Details -->
         <div class="card sale-left">
           <div class="sale-search-area">
             <div class="segmented" id="sales-seg" style="margin-bottom:10px;width:100%">
@@ -1361,21 +1445,16 @@ function renderSales(root) {
               <input id="sales-search-input" placeholder="Type to search..." oninput="salesSearch(this.value)" autocomplete="off">
               <button class="clear" onclick="salesClearSearch()">✕</button>
             </div>
-            <div class="barcode-box" style="margin-top:10px">
-            </div>
           </div>
           <div class="sale-results-area" id="search-results-wrap">
             <div id="search-results"><p class="muted center pad small">Start typing to search items...</p></div>
           </div>
-        </div>
-        <!-- RIGHT: Cart -->
-        <div class="card sale-right">
-          <h3>🛒 Cart <span class="muted small" id="cart-count" style="float:right;font-weight:500"></span></h3>
-          <div class="sale-cart-area" id="cart-list"></div>
-          <div style="flex-shrink:0;margin-top:8px;border-top:1px solid var(--separator);padding-top:10px">
+          <!-- 🆕 Bill Details moved here (left side) -->
+          <div class="bill-fields">
+            <div class="bill-fields-title">📋 Bill Details</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
               <div class="form-field">
-                <label class="field-label">Customer (optional)</label>
+                <label class="field-label">Customer</label>
                 <div class="cust-suggest-wrap">
                   <input id="cust-name" class="ios-input" placeholder="Name..." autocomplete="off" oninput="onCustNameInput(this.value)" onfocus="onCustNameInput(this.value)">
                   <div id="cust-name-suggest" class="cust-suggest hidden"></div>
@@ -1384,18 +1463,25 @@ function renderSales(root) {
               ${field('Phone', '<input id="cust-phone" class="ios-input" placeholder="07xxxxxxx" autocomplete="off">')}
             </div>
             <div id="credit-extra-fields"></div>
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px">
               ${field('Payment', `<select id="payment" class="ios-input" style="padding:8px 10px"><option value="cash">💵 Cash</option><option value="card">💳 Card</option><option value="bank">🏦 Bank</option><option value="qr">📱 QR</option></select>`)}
               ${field('Discount', '<input id="discount" class="ios-input" placeholder="0" value="0" type="number" step="0.01" oninput="updateTotal()" style="padding:8px 10px">')}
-              ${field('Paid', '<input id="paid" class="ios-input" placeholder="blank=exact" type="number" step="0.01" style="padding:8px 10px">')}
+              ${field('Paid', '<input id="paid" class="ios-input" placeholder="blank=exact" type="number" step="0.01" style="padding:8px 10px" oninput="updateChangeDisplay()">')}
             </div>
-            <div class="total-box" style="margin-top:8px">
+            <div id="credit-preview" class="small" style="margin-top:6px;display:none"></div>
+          </div>
+        </div>
+        <!-- RIGHT: Cart -->
+        <div class="card sale-right">
+          <h3>🛒 Cart <span class="muted small" id="cart-count" style="float:right;font-weight:500"></span></h3>
+          <div class="sale-cart-area" id="cart-list"></div>
+          <div class="cart-footer">
+            <div class="total-box">
               <div class="muted small" style="font-weight:700;letter-spacing:.06em">TOTAL</div>
               <div class="total-val" id="total">0.00</div>
-              <div id="credit-preview" class="small" style="margin-top:4px;display:none"></div>
             </div>
             <div class="change-box" id="change-box">
-              <div class="change-label">💰 Change එක</div>
+              <div class="change-label">💰 Change</div>
               <div class="change-val" id="change-val">0</div>
             </div>
             <div class="row gap" style="margin-top:10px">
@@ -1412,38 +1498,37 @@ function renderSales(root) {
 }
 
 function setupSaleKeyboardShortcuts() {
-  const paid = document.getElementById('paid');
-  if (paid) {
-    paid.addEventListener('keydown', e => {
-      if (e.key === 'Enter') { e.preventDefault(); completeSale(); }
-    });
-    paid.addEventListener('input', updateChangeDisplay);
-  }
-  const disc = document.getElementById('discount');
-  if (disc) {
-    disc.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); completeSale(); } });
-  }
-  // Global Enter on sale page (when not in textarea)
-  document.addEventListener('keydown', saleKeyHandler);
+  // Paired with global Enter handler — no per-field handler needed
 }
-function saleKeyHandler(e) {
-  if (currentView !== 'sales') {
-    document.removeEventListener('keydown', saleKeyHandler);
+// Global Enter key handler — OK everywhere
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || e.shiftKey) return;
+  const tag = (e.target.tagName||'').toLowerCase();
+  if (tag === 'textarea') return;
+
+  // 1) Modal open → click OK
+  const modalOk = document.getElementById('modal-ok');
+  if (modalOk && document.getElementById('modal-root').children.length > 0) {
+    e.preventDefault();
+    modalOk.click();
     return;
   }
-  if (e.key === 'Enter' && !e.shiftKey) {
-    const tag = (e.target.tagName || '').toLowerCase();
-    // If focus is on search box, don't complete — let it search
+
+  // 2) Login pass
+  if (e.target.id === 'login-pass') {
+    e.preventDefault(); doLogin(); return;
+  }
+
+  // 3) Sale page — Enter in any input/select completes sale (except search)
+  if (currentView === 'sales' && !document.getElementById('modal-root').children.length) {
     if (e.target.id === 'sales-search-input') return;
-    // If focus on a button/select, allow default
-    if (tag === 'button' || tag === 'select' || tag === 'textarea') return;
-    // If focus on an input INSIDE cart area, Enter completes sale
-    if (tag === 'input' && (e.target.id === 'paid' || e.target.id === 'discount' || e.target.id.startsWith('cust-'))) {
+    if (tag === 'button' || tag === 'select') return;
+    if (tag === 'input') {
       e.preventDefault();
       completeSale();
     }
   }
-}
+});
 
 function addReloadToCart() {
   openModal('Add Manual Item / Reload', `
@@ -1522,13 +1607,12 @@ function salesSearch(v) {
   const q = v.trim().toLowerCase();
   if (!q) { res.innerHTML = '<p class="muted center pad small">Start typing to search items...</p>'; return; }
 
-  // 🆕 Barcode auto-add: if exact barcode match and not in cart
   if (salesTab === 'accessories') {
     const barcodeMatch = DB.accessories.find(a => (a.barcode||'').toLowerCase() === q);
     if (barcodeMatch) {
       addAccessoryToCart(barcodeMatch.id);
       const inp = document.getElementById('sales-search-input');
-      if (inp) { inp.value = ''; }
+      if (inp) inp.value = '';
       res.innerHTML = '<p class="muted center pad small">✅ Barcode item added</p>';
       return;
     }
@@ -1537,7 +1621,7 @@ function salesSearch(v) {
     if (barcodeMatch) {
       addPhoneToCart(barcodeMatch.id);
       const inp = document.getElementById('sales-search-input');
-      if (inp) { inp.value = ''; }
+      if (inp) inp.value = '';
       res.innerHTML = '<p class="muted center pad small">✅ Barcode item added</p>';
       return;
     }
@@ -1952,7 +2036,7 @@ async function deleteStockUnit(id) {
   save(); toast('Deleted','success'); renderPhoneStockBody();
 }
 
-/* STOCK (Accessories) with barcode */
+/* STOCK (Accessories) */
 let accQuery = '';
 let accCatFilter = '';
 function renderStock(root) {
@@ -2160,7 +2244,6 @@ function addShopPayment(shopId) {
   const s = DB.shops.find(x=>x.id===shopId); if (!s) return;
   const stats = calcShopStats(s);
   if (stats.outstanding <= 0.5) { toast('Shop fully paid','info'); return; }
-  const linkedCust = s.customer_id ? DB.customers.find(c=>c.id===s.customer_id) : null;
   openModal(`Add Payment — ${s.name}`, `<div class="form-grid"><div class="danger-box" style="background:rgba(255,159,10,.12);border-color:rgba(255,159,10,.5)"><div class="danger-text" style="color:var(--orange)">Outstanding: <b>${fmtInt(stats.outstanding)}</b></div></div>${field('Amount', `<input id="sp-amt" class="ios-input" type="number" step="0.01" value="${stats.outstanding}" min="0" max="${stats.outstanding}" autofocus>`, true)}${field('Note', '<input id="sp-note" class="ios-input" placeholder="Bank, cash">')}</div>`, () => {
     const amt = Number(document.getElementById('sp-amt').value || 0);
     if (!amt || amt <= 0 || amt > stats.outstanding + 0.01) { toast('Invalid amount','error'); return false; }
@@ -2215,16 +2298,18 @@ function printShopStatement(shopId) {
   const s = DB.shops.find(x=>x.id===shopId); if (!s) return;
   const stats = calcShopStats(s);
   const cfg = DB.settings;
-  document.getElementById('receipt').innerHTML = `<div class="center">${cfg.shop_logo ? `<img src="${cfg.shop_logo}" class="receipt-logo" alt="">` : ''}<div style="font-size:16px;font-weight:bold">${esc(cfg.shop_name)}</div><div>${esc(cfg.shop_address)}</div><div>${esc(cfg.shop_phone)}</div></div><hr><div class="center" style="font-weight:bold;font-size:14px">SHOP STATEMENT</div><hr><div class="row-line"><span>Shop:</span><span>${esc(s.name)}</span></div>${s.phone?`<div class="row-line"><span>Phone:</span><span>${esc(s.phone)}</span></div>`:''}<div class="row-line"><span>Date:</span><span>${esc(now())}</span></div><hr><div style="font-weight:bold">REPAIRS (${stats.reps.length})</div>${[...stats.reps].sort((a,b)=>a.id-b.id).map((r, i) => `<div style="margin-top:6px"><b>${i+1}. ${esc(r.device_brand||'')} ${esc(r.device_model)}</b></div><div style="padding-left:8px">📅 ${esc(r.created_at.slice(0,10))} · 🛠️ ${esc(r.repair_type)}</div><div class="row-line" style="padding-left:8px"><span>Cost: ${fmt(r.cost)}</span><span>Recv: ${fmt(r.received)}</span></div>`).join('')}${stats.payments.length ? `<hr><div style="font-weight:bold">PAYMENTS (${stats.payments.length})</div>${[...stats.payments].sort((a,b)=>a.id-b.id).map((p,i)=>`<div class="row-line"><span>${i+1}. ${esc(p.created_at.slice(0,16))}</span><span>+${fmt(p.amount)}</span></div>`).join('')}` : ''}<hr><div class="row-line"><span>Billed:</span><span>${fmt(stats.billed)}</span></div><div class="row-line"><span>Received:</span><span>${fmt(stats.received)}</span></div><div class="row-line" style="font-weight:bold;font-size:14px"><span>OUTSTANDING:</span><span>${fmt(stats.outstanding)}</span></div><hr><div class="center">Thank you!</div><div style="height:20px"></div>`;
-  setTimeout(()=>window.print(),100);
+  applyPrintSize();
+  document.getElementById('receipt').innerHTML = `<div class="center">${cfg.shop_logo ? `<img src="${cfg.shop_logo}" class="receipt-logo" alt="">` : ''}<div style="font-size:14px;font-weight:bold">${esc(cfg.shop_name)}</div><div>${esc(cfg.shop_phone)}</div></div><hr><div class="center" style="font-weight:bold">SHOP STATEMENT</div><hr><div class="row-line"><span>Shop:</span><span>${esc(s.name)}</span></div>${s.phone?`<div class="row-line"><span>Phone:</span><span>${esc(s.phone)}</span></div>`:''}<div class="row-line"><span>Date:</span><span>${esc(now())}</span></div><hr><div style="font-weight:bold">REPAIRS (${stats.reps.length})</div>${[...stats.reps].sort((a,b)=>a.id-b.id).map((r, i) => `<div style="margin-top:6px"><b>${i+1}. ${esc(r.device_brand||'')} ${esc(r.device_model)}</b></div><div style="padding-left:8px">${esc(r.created_at.slice(0,10))} · ${esc(r.repair_type)}</div><div class="row-line" style="padding-left:8px"><span>Cost: ${fmt(r.cost)}</span><span>Recv: ${fmt(r.received)}</span></div>`).join('')}${stats.payments.length ? `<hr><div style="font-weight:bold">PAYMENTS (${stats.payments.length})</div>${[...stats.payments].sort((a,b)=>a.id-b.id).map((p,i)=>`<div class="row-line"><span>${i+1}. ${esc(p.created_at.slice(0,16))}</span><span>+${fmt(p.amount)}</span></div>`).join('')}` : ''}<hr><div class="row-line"><span>Billed:</span><span>${fmt(stats.billed)}</span></div><div class="row-line"><span>Received:</span><span>${fmt(stats.received)}</span></div><div class="row-line" style="font-weight:bold"><span>OUTSTANDING:</span><span>${fmt(stats.outstanding)}</span></div><hr><div class="center">Thank you!</div><div style="height:20px"></div>`;
+  setTimeout(()=>window.print(),120);
 }
 function printShopRepairReceipt(repairId) {
   const r = DB.shop_repairs.find(x=>x.id===repairId); if (!r) return;
   const s = DB.shops.find(x=>x.id===r.shop_id);
   const cfg = DB.settings;
   const due = Math.max(0, (Number(r.cost)||0) - (Number(r.received)||0));
-  document.getElementById('receipt').innerHTML = `<div class="center">${cfg.shop_logo ? `<img src="${cfg.shop_logo}" class="receipt-logo" alt="">` : ''}<div style="font-size:16px;font-weight:bold">${esc(cfg.shop_name)}</div><div>${esc(cfg.shop_phone)}</div></div><hr><div class="center" style="font-weight:bold;font-size:14px">SHOP REPAIR BILL</div><hr><div class="row-line"><span>Date:</span><span>${esc(r.created_at)}</span></div>${s?`<div class="row-line"><span>Shop:</span><span>${esc(s.name)}</span></div>`:''}${s&&s.phone?`<div class="row-line"><span>Phone:</span><span>${esc(s.phone)}</span></div>`:''}<hr><div><b>Device:</b> ${esc(r.device_brand||'')} ${esc(r.device_model||'')}</div><div><b>Repair:</b> ${esc(r.repair_type)}</div>${r.notes?`<div><b>Notes:</b> ${esc(r.notes)}</div>`:''}<hr><div class="row-line"><span>Cost:</span><span>${fmt(r.cost)}</span></div><div class="row-line"><span>Received:</span><span>${fmt(r.received)}</span></div>${due > 0 ? `<div class="row-line" style="font-weight:bold"><span>Outstanding:</span><span>${fmt(due)}</span></div>` : ''}<hr><div class="center">Thank you!</div><div style="height:20px"></div>`;
-  setTimeout(()=>window.print(),100);
+  applyPrintSize();
+  document.getElementById('receipt').innerHTML = `<div class="center">${cfg.shop_logo ? `<img src="${cfg.shop_logo}" class="receipt-logo" alt="">` : ''}<div style="font-size:14px;font-weight:bold">${esc(cfg.shop_name)}</div><div>${esc(cfg.shop_phone)}</div></div><hr><div class="center" style="font-weight:bold">SHOP REPAIR BILL</div><hr><div class="row-line"><span>Date:</span><span>${esc(r.created_at)}</span></div>${s?`<div class="row-line"><span>Shop:</span><span>${esc(s.name)}</span></div>`:''}${s&&s.phone?`<div class="row-line"><span>Phone:</span><span>${esc(s.phone)}</span></div>`:''}<hr><div><b>Device:</b> ${esc(r.device_brand||'')} ${esc(r.device_model||'')}</div><div><b>Repair:</b> ${esc(r.repair_type)}</div>${r.notes?`<div><b>Notes:</b> ${esc(r.notes)}</div>`:''}<hr><div class="row-line"><span>Cost:</span><span>${fmt(r.cost)}</span></div><div class="row-line"><span>Received:</span><span>${fmt(r.received)}</span></div>${due > 0 ? `<div class="row-line" style="font-weight:bold"><span>Outstanding:</span><span>${fmt(due)}</span></div>` : ''}<hr><div class="center">Thank you!</div><div style="height:20px"></div>`;
+  setTimeout(()=>window.print(),120);
 }
 
 /* CUSTOMERS */
@@ -2358,22 +2443,19 @@ function exportReportCSV() {
   toast('CSV exported','success');
 }
 
-/* ═══════════════════════════════════════════════════════════
-   🔎 BILL SEARCH — NEW FEATURE
-   ═══════════════════════════════════════════════════════════ */
+/* BILL SEARCH */
 let billQuery = '';
 let billResults = [];
-let billSearchType = 'all'; // all | imei | model | customer | invoice | barcode
-
+let billSearchType = 'all';
 function renderBillSearch(root) {
   root.innerHTML = `
     <div class="view-shell">
-      <div class="page-head"><div><h1>🔎 Bill Search</h1><p>IMEI / Model / Customer / Invoice / Barcode </p></div></div>
+      <div class="page-head"><div><h1>🔎 Bill Search</h1><p>IMEI / Model / Customer / Invoice / Barcode</p></div></div>
       <div class="bill-search-hero">
         <h3>🔍 Search any sold item</h3>
-        <p>IMEI, model, customer name, invoice number,barcode</p>
+        <p>IMEI, model, customer name, invoice number, barcode</p>
         <div class="ios-search" style="max-width:none;width:100%">
-          <input id="bill-search-input" placeholder="Type IMEI, model, customer, invoice, barcode..." autocomplete="off" oninput="billSearch(this.value)" autofocus>
+          <input id="bill-search-input" placeholder="Type IMEI, model, customer, invoice, barcode..." autocomplete="off" oninput="billSearch(this.value)">
           <button class="clear" onclick="billClear()">✕</button>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">
@@ -2407,8 +2489,6 @@ function billSearch(v) {
   const results = document.getElementById('bill-results');
   if (!results) return;
   if (!q) { billClear(); return; }
-
-  // Find matching sale_items
   const matchedItems = DB.sale_items.filter(it => {
     const itemCode = (it.item_code||'').toLowerCase();
     const desc = (it.description||'').toLowerCase();
@@ -2416,11 +2496,8 @@ function billSearch(v) {
     if (billSearchType === 'imei') return desc.includes(q) && desc.includes('imei');
     if (billSearchType === 'model') return desc.includes(q) && !desc.includes('imei');
     if (billSearchType === 'barcode') return barcode.includes(q);
-    // 'all' or others
     return desc.includes(q) || itemCode.includes(q) || barcode.includes(q);
   });
-
-  // Also match by customer / invoice
   const saleIdsFromItems = new Set(matchedItems.map(it => it.sale_id));
   const allSales = DB.sales;
   const matchedSales = allSales.filter(s => {
@@ -2430,18 +2507,14 @@ function billSearch(v) {
     }
     if (billSearchType === 'invoice') return (s.invoice_no||'').toLowerCase().includes(q);
     if (billSearchType === 'imei' || billSearchType === 'model' || billSearchType === 'barcode') return saleIdsFromItems.has(s.id);
-    // all
     const c = DB.customers.find(x=>x.id===s.customer_id);
     return (s.invoice_no||'').toLowerCase().includes(q) || (c?.name||'').toLowerCase().includes(q) || (c?.phone||'').toLowerCase().includes(q) || saleIdsFromItems.has(s.id);
   });
-
   matchedSales.sort((a,b)=>b.id-a.id);
-
   if (!matchedSales.length) {
     results.innerHTML = `<div class="card center pad muted"><div style="font-size:40px;margin-bottom:8px">😕</div><div>No bills found for "<b>${esc(v)}</b>"</div><div class="small muted" style="margin-top:6px">Try IMEI, model, customer name, or invoice number</div></div>`;
     return;
   }
-
   results.innerHTML = `<div class="muted small" style="margin-bottom:10px;font-weight:600">${matchedSales.length} bill${matchedSales.length!==1?'s':''} found</div>` + matchedSales.slice(0,50).map(s => {
     const c = DB.customers.find(x=>x.id===s.customer_id);
     const u = DB.users.find(x=>x.id===s.user_id);
@@ -2533,7 +2606,7 @@ function renderSettingsBody() {
   if (settingsTab === 'shop') {
     const s = DB.settings;
     const lh = s.shop_logo ? `<img src="${s.shop_logo}" class="logo-preview" alt="">` : `<div class="logo-preview">📱</div>`;
-    body.innerHTML = `<div class="card" style="max-width:600px;margin-bottom:14px"><h3>🖼️ Shop Logo</h3><div class="logo-row">${lh}<div style="flex:1"><div class="muted small" style="margin-bottom:8px">Square image (PNG/JPG, max 500 KB)</div><div class="row gap" style="flex-wrap:wrap"><label class="ios-pill blue sm" style="cursor:pointer;margin:0">📤 Upload<input type="file" accept="image/*" style="display:none" onchange="handleLogoUpload(this.files[0]);this.value=''"></label>${s.shop_logo ? `<button class="ios-pill red sm" onclick="removeLogo()">🗑 Remove</button>` : ''}</div></div></div></div><div class="card" style="max-width:600px"><h3>Shop Info</h3><div class="form-grid">${field('Shop name', `<input id="s-name" class="ios-input" value="${esc(s.shop_name)}">`, true)}${field('Address', `<input id="s-addr" class="ios-input" value="${esc(s.shop_address)}">`)}${field('Phone', `<input id="s-phone" class="ios-input" value="${esc(s.shop_phone)}">`)}${field('Currency', `<input id="s-cur" class="ios-input" value="${esc(s.currency)}">`)}${field('Default low stock', `<input id="s-low" class="ios-input" type="number" value="${s.low_stock}">`)}</div><button class="ios-pill blue mt" onclick="saveSettings()">Save Settings</button></div>`;
+    body.innerHTML = `<div class="card" style="max-width:600px;margin-bottom:14px"><h3>🖼️ Shop Logo</h3><div class="logo-row">${lh}<div style="flex:1"><div class="muted small" style="margin-bottom:8px">Square image (PNG/JPG, max 500 KB)</div><div class="row gap" style="flex-wrap:wrap"><label class="ios-pill blue sm" style="cursor:pointer;margin:0">📤 Upload<input type="file" accept="image/*" style="display:none" onchange="handleLogoUpload(this.files[0]);this.value=''"></label>${s.shop_logo ? `<button class="ios-pill red sm" onclick="removeLogo()">🗑 Remove</button>` : ''}</div></div></div></div><div class="card" style="max-width:600px"><h3>Shop Info</h3><div class="form-grid">${field('Shop name', `<input id="s-name" class="ios-input" value="${esc(s.shop_name)}">`, true)}${field('Address', `<input id="s-addr" class="ios-input" value="${esc(s.shop_address)}">`)}${field('Phone', `<input id="s-phone" class="ios-input" value="${esc(s.shop_phone)}">`)}${field('Currency', `<input id="s-cur" class="ios-input" value="${esc(s.currency)}">`)}${field('Default low stock', `<input id="s-low" class="ios-input" type="number" value="${s.low_stock}">`)}${field('🖨️ Print paper size', `<select id="s-print" class="ios-input"><option value="58mm" ${s.print_size==='58mm'?'selected':''}>58mm (2" thermal)</option><option value="80mm" ${s.print_size==='80mm'?'selected':''}>80mm (3" thermal)</option><option value="A5" ${s.print_size==='A5'?'selected':''}>A5 paper</option></select>`, false, '2mm/2.5mm thermal printers → choose 58mm')}</div><button class="ios-pill blue mt" onclick="saveSettings()">Save Settings</button></div>`;
   } else if (settingsTab === 'users') {
     let users = DB.users;
     if (q) users = users.filter(u => (u.username||'').toLowerCase().includes(q) || (u.name||'').toLowerCase().includes(q) || (u.role||'').toLowerCase().includes(q));
@@ -2546,9 +2619,7 @@ function restoreFromSafety() {
   const backup = loadSafetyBackup();
   if (!isDBValid(backup)) { toast('No valid backup found','error'); return; }
   if (!confirm('Restore from safety backup? Current Firebase data will be replaced.')) return;
-  DB = backup;
-  migrateDB();
-  saveToServer(true);
+  DB = backup; migrateDB(); saveToServer(true);
   toast('♻️ Restored from backup','success');
   setTimeout(()=>location.reload(), 800);
 }
@@ -2564,6 +2635,7 @@ function saveSettings() {
   DB.settings.shop_phone = document.getElementById('s-phone').value.trim();
   DB.settings.currency = document.getElementById('s-cur').value.trim() || 'LKR';
   DB.settings.low_stock = Number(document.getElementById('s-low').value || 2);
+  DB.settings.print_size = document.getElementById('s-print').value || '58mm';
   save(); toast('Settings saved','success');
   document.getElementById('side-shop-name').textContent = DB.settings.shop_name;
 }
@@ -2651,7 +2723,26 @@ async function deleteUser(id) {
   toast('User deleted','success'); renderSettingsBody();
 }
 
-/* PRINT */
+/* ═══════════════════════════════════════════════════════════
+   🆕 PRINT — dynamic size (58mm / 80mm / A5)
+   ═══════════════════════════════════════════════════════════ */
+function applyPrintSize() {
+  const size = DB?.settings?.print_size || '58mm';
+  let style = document.getElementById('dynamic-print-style');
+  if (!style) {
+    style = document.createElement('style');
+    style.id = 'dynamic-print-style';
+    document.head.appendChild(style);
+  }
+  if (size === '58mm') {
+    style.textContent = '@media print { @page { size: 58mm auto; margin: 1mm; } html, body { width: 58mm !important; margin:0 !important; } #receipt { width: 56mm; font-size: 10px; line-height: 1.3; padding: 1mm; } #receipt .receipt-logo { max-width: 40mm; max-height: 12mm; } #receipt hr { margin: 3px 0; } }';
+  } else if (size === '80mm') {
+    style.textContent = '@media print { @page { size: 80mm auto; margin: 2mm; } html, body { width: 80mm !important; margin:0 !important; } #receipt { width: 76mm; font-size: 11px; line-height: 1.35; padding: 1mm; } #receipt .receipt-logo { max-width: 50mm; max-height: 18mm; } }';
+  } else {
+    style.textContent = '@media print { @page { size: A5; margin: 10mm; } html, body { width: auto !important; margin:0 !important; } #receipt { width: 100%; font-size: 12px; line-height: 1.4; } #receipt .receipt-logo { max-width: 30mm; max-height: 30mm; } }';
+  }
+}
+
 function printSaleReceipt(saleId) {
   const s = DB.sales.find(x=>x.id===saleId); if (!s) return;
   const items = DB.sale_items.filter(i=>i.sale_id===saleId);
@@ -2659,15 +2750,17 @@ function printSaleReceipt(saleId) {
   const u = DB.users.find(x=>x.id===s.user_id);
   const cfg = DB.settings;
   const saleReturns = DB.returns.filter(r => r.sale_id === saleId);
-  document.getElementById('receipt').innerHTML = `<div class="center">${cfg.shop_logo ? `<img src="${cfg.shop_logo}" class="receipt-logo" alt="">` : ''}<div style="font-size:16px;font-weight:bold">${esc(cfg.shop_name)}</div><div>${esc(cfg.shop_address)}</div><div>${esc(cfg.shop_phone)}</div></div><hr><div class="row-line"><span>Invoice:</span><span>${esc(s.invoice_no)}</span></div><div class="row-line"><span>Date:</span><span>${esc(s.created_at)}</span></div>${c ? `<div class="row-line"><span>Customer:</span><span>${esc(c.name)}</span></div>` : ''}${c && c.phone ? `<div class="row-line"><span>Phone:</span><span>${esc(c.phone)}</span></div>` : ''}${u ? `<div class="row-line"><span>Served by:</span><span>${esc(u.name)}</span></div>` : ''}<hr>${items.map(it => { const isReload = it.item_type === 'reload'; const w = warrantyText(it.warranty_months); return `<div>${isReload?'💳 ':''}[${esc(it.item_code||(isReload?'Reload':'-'))}]${it.barcode?' 🏷️'+esc(it.barcode):''} ${esc(it.description)}</div>${w ? `<div style="padding-left:8px">  Warranty: ${w}</div>` : ''}<div class="row-line"><span>  ${it.qty} x ${fmt(it.price)}</span><span>${fmt(it.qty*it.price)}</span></div>`; }).join('')}<hr><div class="row-line"><span>Subtotal:</span><span>${fmt(s.subtotal)}</span></div>${s.discount ? `<div class="row-line"><span>Discount:</span><span>-${fmt(s.discount)}</span></div>` : ''}<div class="row-line" style="font-weight:bold;font-size:14px"><span>TOTAL:</span><span>${fmt(s.total)}</span></div><div class="row-line"><span>Paid (${esc(s.payment_method)}):</span><span>${fmt(s.paid_amount)}</span></div>${s.change > 0.01 ? `<div class="row-line"><span>Change:</span><span>${fmt(s.change)}</span></div>` : ''}${s.balance > 0 ? `<div class="row-line"><span>Balance:</span><span>${fmt(s.balance)}</span></div>` : ''}${c && c.balance > 0 ? `<div class="row-line" style="font-weight:bold"><span>Total Owed:</span><span>${fmt(c.balance)}</span></div>` : ''}${saleReturns.length ? `<hr><div class="center" style="font-weight:bold">RETURNS</div>${saleReturns.map(r => `<div>[${esc(r.item_code||'-')}] ${esc(r.description)} ${r.restocked?'✅':'❌'}</div><div class="row-line"><span>  ${r.qty} × ${fmt(r.unit_price)}</span><span>-${fmt(r.refund_amount)}</span></div>`).join('')}` : ''}<hr><div class="center">Thank you! powered by Look Mobile · 0756947700 · v2.1</div><div style="height:20px"></div>`;
-  setTimeout(()=>window.print(),100);
+  applyPrintSize();
+  document.getElementById('receipt').innerHTML = `<div class="center">${cfg.shop_logo ? `<img src="${cfg.shop_logo}" class="receipt-logo" alt="">` : ''}<div style="font-size:14px;font-weight:bold">${esc(cfg.shop_name)}</div><div>${esc(cfg.shop_address)}</div><div>${esc(cfg.shop_phone)}</div></div><hr><div class="row-line"><span>Invoice:</span><span>${esc(s.invoice_no)}</span></div><div class="row-line"><span>Date:</span><span>${esc(s.created_at)}</span></div>${c ? `<div class="row-line"><span>Customer:</span><span>${esc(c.name)}</span></div>` : ''}${c && c.phone ? `<div class="row-line"><span>Phone:</span><span>${esc(c.phone)}</span></div>` : ''}${u ? `<div class="row-line"><span>Served by:</span><span>${esc(u.name)}</span></div>` : ''}<hr>${items.map(it => { const isReload = it.item_type === 'reload'; const w = warrantyText(it.warranty_months); return `<div>${isReload?'💳 ':''}[${esc(it.item_code||(isReload?'Reload':'-'))}]${it.barcode?' 🏷️'+esc(it.barcode):''} ${esc(it.description)}</div>${w ? `<div style="padding-left:8px">  Warranty: ${w}</div>` : ''}<div class="row-line"><span>  ${it.qty} x ${fmt(it.price)}</span><span>${fmt(it.qty*it.price)}</span></div>`; }).join('')}<hr><div class="row-line"><span>Subtotal:</span><span>${fmt(s.subtotal)}</span></div>${s.discount ? `<div class="row-line"><span>Discount:</span><span>-${fmt(s.discount)}</span></div>` : ''}<div class="row-line" style="font-weight:bold"><span>TOTAL:</span><span>${fmt(s.total)}</span></div><div class="row-line"><span>Paid (${esc(s.payment_method)}):</span><span>${fmt(s.paid_amount)}</span></div>${s.change > 0.01 ? `<div class="row-line"><span>Change:</span><span>${fmt(s.change)}</span></div>` : ''}${s.balance > 0 ? `<div class="row-line"><span>Balance:</span><span>${fmt(s.balance)}</span></div>` : ''}${c && c.balance > 0 ? `<div class="row-line" style="font-weight:bold"><span>Total Owed:</span><span>${fmt(c.balance)}</span></div>` : ''}${saleReturns.length ? `<hr><div class="center" style="font-weight:bold">RETURNS</div>${saleReturns.map(r => `<div>[${esc(r.item_code||'-')}] ${esc(r.description)} ${r.restocked?'✅':'❌'}</div><div class="row-line"><span>  ${r.qty} × ${fmt(r.unit_price)}</span><span>-${fmt(r.refund_amount)}</span></div>`).join('')}` : ''}<hr><div class="center">Thank you!</div><div style="height:15px"></div>`;
+  setTimeout(()=>window.print(),120);
 }
 function printRepairReceipt(repairId) {
   const r = DB.repairs.find(x=>x.id===repairId); if (!r) return;
   const c = DB.customers.find(x=>x.id===r.customer_id);
   const cfg = DB.settings;
-  document.getElementById('receipt').innerHTML = `<div class="center">${cfg.shop_logo ? `<img src="${cfg.shop_logo}" class="receipt-logo" alt="">` : ''}<div style="font-size:16px;font-weight:bold">${esc(cfg.shop_name)}</div><div>${esc(cfg.shop_phone)}</div></div><hr><div class="center" style="font-weight:bold;font-size:14px">REPAIR SLIP</div><hr><div class="row-line"><span>Job:</span><span>${esc(r.job_no)}</span></div><div class="row-line"><span>Date:</span><span>${esc(r.received_at)}</span></div>${c ? `<div class="row-line"><span>Customer:</span><span>${esc(c.name)}</span></div>` : ''}${c && c.phone ? `<div class="row-line"><span>Phone:</span><span>${esc(c.phone)}</span></div>` : ''}<div class="row-line"><span>Device:</span><span>${esc(r.device_brand)} ${esc(r.device_model)}</span></div>${r.imei ? `<div class="row-line"><span>IMEI:</span><span>${esc(r.imei)}</span></div>` : ''}<div><b>Issue:</b> ${esc(r.issue)}</div>${r.diagnosis ? `<div><b>Diagnosis:</b> ${esc(r.diagnosis)}</div>` : ''}<hr><div class="row-line"><span>Estimate:</span><span>${fmt(r.estimated_cost)}</span></div><div class="row-line"><span>Advance:</span><span>${fmt(r.advance_paid)}</span></div>${r.final_cost ? `<div class="row-line" style="font-weight:bold"><span>Balance:</span><span>${fmt(Math.max(0,r.final_cost-r.advance_paid))}</span></div>` : ''}<hr><div class="center">Keep for collection · v2.1</div><div style="height:20px"></div>`;
-  setTimeout(()=>window.print(),100);
+  applyPrintSize();
+  document.getElementById('receipt').innerHTML = `<div class="center">${cfg.shop_logo ? `<img src="${cfg.shop_logo}" class="receipt-logo" alt="">` : ''}<div style="font-size:14px;font-weight:bold">${esc(cfg.shop_name)}</div><div>${esc(cfg.shop_phone)}</div></div><hr><div class="center" style="font-weight:bold">REPAIR SLIP</div><hr><div class="row-line"><span>Job:</span><span>${esc(r.job_no)}</span></div><div class="row-line"><span>Date:</span><span>${esc(r.received_at)}</span></div>${c ? `<div class="row-line"><span>Customer:</span><span>${esc(c.name)}</span></div>` : ''}${c && c.phone ? `<div class="row-line"><span>Phone:</span><span>${esc(c.phone)}</span></div>` : ''}<div class="row-line"><span>Device:</span><span>${esc(r.device_brand)} ${esc(r.device_model)}</span></div>${r.imei ? `<div class="row-line"><span>IMEI:</span><span>${esc(r.imei)}</span></div>` : ''}<div><b>Issue:</b> ${esc(r.issue)}</div>${r.diagnosis ? `<div><b>Diagnosis:</b> ${esc(r.diagnosis)}</div>` : ''}<hr><div class="row-line"><span>Estimate:</span><span>${fmt(r.estimated_cost)}</span></div><div class="row-line"><span>Advance:</span><span>${fmt(r.advance_paid)}</span></div>${r.final_cost ? `<div class="row-line" style="font-weight:bold"><span>Balance:</span><span>${fmt(Math.max(0,r.final_cost-r.advance_paid))}</span></div>` : ''}<hr><div class="center">Keep for collection</div><div style="height:15px"></div>`;
+  setTimeout(()=>window.print(),120);
 }
 
 /* GLOBAL CLICK */
@@ -2678,11 +2771,15 @@ document.addEventListener('mousedown', (e) => {
     const inN = e.target.closest('#cust-name');
     if (!inS && !inN) hideCustSuggest();
   }
+  // Close mobile sidebar if clicking outside
+  if (isMobile() && document.body.classList.contains('sidebar-open-mobile')) {
+    const inSide = e.target.closest('#sidebar');
+    const moreBtn = e.target.closest('[data-more]');
+    if (!inSide && !moreBtn) document.body.classList.remove('sidebar-open-mobile');
+  }
 });
 
-/* ═══════════════════════════════════════════════════════════
-   INIT
-   ═══════════════════════════════════════════════════════════ */
+/* INIT */
 (async function init() {
   const cached = loadCache();
   if (isDBValid(cached)) {
@@ -2691,13 +2788,11 @@ document.addEventListener('mousedown', (e) => {
     applyLogo();
     document.getElementById('login-shop-name').textContent = DB.settings.shop_name;
   }
-
   const r = await loadFromServer();
   if (!r.ok) {
     document.getElementById('loading-screen').innerHTML = `<div style="text-align:center;padding:20px;max-width:440px"><div style="font-size:56px;margin-bottom:16px">📡</div><h2 style="font-size:20px;margin-bottom:8px">Cannot reach Firebase</h2><p style="color:var(--text-2);font-size:13px;line-height:1.6">Check internet connection, then retry.</p><button class="ios-pill blue" style="margin-top:16px" onclick="location.reload()">🔄 Retry</button></div>`;
     return;
   }
-
   applyTheme(DB.settings.theme || 'dark');
   applyLogo();
   document.getElementById('login-shop-name').textContent = DB.settings.shop_name;
@@ -2709,15 +2804,15 @@ document.addEventListener('mousedown', (e) => {
     document.getElementById('loading-screen').classList.add('hidden');
     document.getElementById('login-screen').classList.add('hidden');
     document.getElementById('app-layout').classList.remove('hidden');
-    updateUserBox(); buildNav();
+    updateUserBox(); buildNav(); buildMobileTabs();
     currentView = firstAllowedView(); render();
   } else {
     showLogin();
   }
-
   fbInitDone = true;
   startRealtimeSync();
-  document.getElementById('version-chip').textContent = POS_VERSION;
+  const vc = document.getElementById('version-chip');
+  if (vc) vc.textContent = POS_VERSION;
 })();
 
 document.getElementById('login-pass').addEventListener('keypress', e => { if (e.key==='Enter') doLogin(); });
