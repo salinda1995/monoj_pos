@@ -81,15 +81,33 @@ input,select,textarea{font-family:inherit;color:inherit}
   transition:all .15s cubic-bezier(.4,0,.2,1);border:1px solid var(--glass-border)}
 .ios-btn:hover{background:var(--glass-strong)}
 .ios-btn:active{transform:scale(.97)}
+/* 🆕 Smaller buttons only inside sidebar footer */
+.sidebar-foot .switch-btn,
+.sidebar-foot .ios-btn{
+  padding:6px 10px;font-size:11px;gap:5px;margin-bottom:5px;border-radius:var(--radius-sm);
+}
+.sidebar-foot .switch-btn span,
+.sidebar-foot .ios-btn span{font-size:11px}
+.sidebar-foot .ios-btn.danger{color:var(--red)}
+/* 🆕 Storage status is now a clickable sync button */
 .storage-status{display:flex;align-items:center;gap:8px;padding:7px 9px;
   border-radius:var(--radius-md);background:var(--glass-hover);margin-bottom:7px;
-  font-size:10.5px;transition:all .15s;cursor:default}
+  font-size:10.5px;transition:all .15s;cursor:pointer;user-select:none;position:relative}
+.storage-status:hover{background:var(--glass-strong);transform:translateY(-1px);
+  box-shadow:var(--shadow-sm);border-color:var(--blue)}
+.storage-status:active{transform:scale(.98)}
 .storage-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;box-shadow:0 0 8px currentColor}
 .storage-dot.connected{background:var(--green);color:var(--green)}
 .storage-dot.disconnected{background:var(--red);color:var(--red)}
 .storage-dot.saving{background:var(--orange);color:var(--orange);animation:pulse 1s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 .storage-label{flex:1;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.storage-sync-icon{width:20px;height:20px;border-radius:6px;background:var(--glass);
+  border:1px solid var(--glass-border);display:flex;align-items:center;justify-content:center;
+  font-size:10px;flex-shrink:0;transition:all .15s;color:var(--text-3)}
+.storage-status:hover .storage-sync-icon{background:var(--blue);color:#fff;border-color:var(--blue)}
+.storage-sync-icon.spinning{animation:spin 1s linear infinite;background:var(--orange);
+  color:#fff;border-color:var(--orange)}
 .content{flex:1;min-width:0;overflow:hidden;display:flex;flex-direction:column;
   transition:padding-left .3s cubic-bezier(.4,0,.2,1)}
 .view-shell{flex:1;display:flex;flex-direction:column;gap:12px;overflow:hidden;
@@ -331,12 +349,11 @@ select.ios-input{cursor:pointer;appearance:none;
 @media(max-width:800px){
   .layout{padding:8px;gap:8px}
   .sidebar{width:64px;padding:10px 6px}
-  .brand-text,.nav a span:last-child,.user-info{display:none}
+  .brand-text,.nav a span:last-child,.user-info,.storage-label{display:none}
   .nav a{justify-content:center;padding:10px 8px}
   .nav a .nav-icon{width:auto}
   .brand{justify-content:center;padding:6px 0 12px}
   .content .page-head h1{font-size:19px}
-  .storage-label{display:none}
 }
 .modal-bg-danger{background:rgba(80,0,0,.72)!important}
 .modal.danger-pulse{border-color:var(--red)!important;
@@ -520,9 +537,10 @@ body.sidebar-hidden .content{padding-left:54px}
     </div>
     <nav class="nav" id="nav"></nav>
     <div class="sidebar-foot">
-      <div class="storage-status">
+      <div class="storage-status" onclick="manualSync()" title="Click to force sync with Firebase" id="storage-status-el">
         <div class="storage-dot disconnected" id="storage-dot"></div>
         <div class="storage-label" id="storage-label">Connecting...</div>
+        <div class="storage-sync-icon" id="sync-icon">🔄</div>
       </div>
       <div class="user-card">
         <div class="avatar" id="user-avatar">A</div>
@@ -531,9 +549,9 @@ body.sidebar-hidden .content{padding-left:54px}
           <div class="user-role" id="user-role-display">admin</div>
         </div>
       </div>
-      <button class="switch-btn" onclick="showSwitchAccount()">🔄 Switch Account</button>
-      <button class="ios-btn" onclick="toggleTheme()" style="margin-bottom:6px">🌗 <span>Theme</span></button>
-      <button class="ios-btn" onclick="doLogout()" style="color:var(--red)">🚪 <span>Logout</span></button>
+      <button class="switch-btn" onclick="showSwitchAccount()">🔄 <span>Switch Account</span></button>
+      <button class="ios-btn" onclick="toggleTheme()">🌗 <span>Theme</span></button>
+      <button class="ios-btn danger" onclick="doLogout()">🚪 <span>Logout</span></button>
     </div>
   </aside>
   <main class="content" id="content"></main>
@@ -564,7 +582,6 @@ firebase.initializeApp(firebaseConfig);
 const fbDB = firebase.database();
 const fbRef = fbDB.ref('pos_data');
 
-/* Legacy API endpoint — no longer used, kept as constant */
 const API = '/api/data';
 const LS_KEY = 'phone_shop_pos_cache';
 
@@ -597,6 +614,7 @@ let currentShopId = null;
 let shopFilter = 'all';
 let fbConnected = false;
 let fbInitDone = false;
+let syncing = false;
 
 function canSeeCost() {
   return currentUser && (currentUser.role === 'admin' || currentUser.role === 'manager');
@@ -613,18 +631,76 @@ function initSidebar() {
 initSidebar();
 
 /* ═══════════════════════════════════════════════════════════
-   🔥 FIREBASE SERVER (replaces old fetch-based server)
+   🔄 MANUAL SYNC (visible to ALL accounts)
+   ═══════════════════════════════════════════════════════════ */
+async function manualSync() {
+  if (syncing) { toast('Sync already in progress...', 'info', 1500); return; }
+  if (!DB) { toast('Data not loaded yet', 'warn'); return; }
+
+  const ok = confirm(
+    '🔄  Force Sync with Firebase?\n' +
+    '─────────────────────────\n' +
+    '• Push local changes to cloud\n' +
+    '• Pull latest data back\n' +
+    '• Refresh screen\n\n' +
+    'Safe to run anytime. Continue?'
+  );
+  if (!ok) return;
+
+  syncing = true;
+  const icon = document.getElementById('sync-icon');
+  if (icon) icon.classList.add('spinning');
+
+  try {
+    updateStorageStatus('saving');
+    toast('Syncing with Firebase...', 'info', 1500);
+
+    // 1️⃣ Push local DB to Firebase (with timestamp)
+    DB._lastSaved = Date.now();
+    await fbRef.set(DB);
+
+    // 2️⃣ Wait a moment for Firebase to settle
+    await new Promise(r => setTimeout(r, 500));
+
+    // 3️⃣ Pull back (in case another device wrote in between)
+    const snapshot = await fbRef.once('value');
+    const remote = snapshot.val();
+    if (remote && remote.products) {
+      DB = remote;
+      migrateDB();
+      cacheLocal();
+    }
+
+    // 4️⃣ Re-render
+    if (currentUser) {
+      updateUserBox();
+      buildNav();
+      render();
+    }
+
+    updateStorageStatus('connected');
+    toast('✅ Synced successfully', 'success', 2500);
+  } catch (e) {
+    console.error('Manual sync failed:', e);
+    updateStorageStatus('disconnected');
+    toast('❌ Sync failed: ' + (e.message || 'Check internet'), 'error', 4000);
+  } finally {
+    syncing = false;
+    if (icon) icon.classList.remove('spinning');
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
+   🔥 FIREBASE SERVER
    ═══════════════════════════════════════════════════════════ */
 async function loadFromServer() {
   try {
-    // Instant load from localStorage cache
     const cached = loadCache();
     if (cached && cached.products) {
       DB = cached;
       migrateDB();
     }
 
-    // Fetch from Firebase Realtime DB
     const snapshot = await fbRef.once('value');
     const data = snapshot.val();
 
@@ -637,7 +713,6 @@ async function loadFromServer() {
       return { ok: true, hasData: true };
     }
 
-    // No data in Firebase — first time setup
     if (!DB || !DB.products) {
       DB = createFreshDB();
       migrateDB();
@@ -651,7 +726,6 @@ async function loadFromServer() {
     console.error('Firebase load failed:', e);
     fbConnected = false;
     updateStorageStatus('disconnected');
-    // Fallback to localStorage
     const cached = loadCache();
     if (cached && cached.products) {
       DB = cached;
@@ -668,16 +742,14 @@ async function saveToServer(immediate = false) {
 
   if (!immediate) {
     if (writeTimer) clearTimeout(writeTimer);
-    writeTimer = setTimeout(() => saveToServer(true), 400);
+    writeTimer = setTimeout(() => saveToServer(true), 250);
     return;
   }
 
   try {
     updateStorageStatus('saving');
-    // Remove any timestamp field before writing (it would loop)
-    const payload = { ...DB };
-    delete payload._lastSaved;
-    await fbRef.set(payload);
+    DB._lastSaved = Date.now();
+    await fbRef.set(DB);
     fbConnected = true;
     updateStorageStatus('connected');
   } catch (e) {
@@ -716,20 +788,20 @@ function loadCache() {
 }
 
 /* ═══════════════════════════════════════════════════════════
-   REALTIME SYNC — Multi-device updates
+   REALTIME SYNC — Multi-device updates (won't interrupt modals)
    ═══════════════════════════════════════════════════════════ */
 function startRealtimeSync() {
   fbDB.ref('.info/connected').on('value', (snap) => {
     fbConnected = snap.val() === true;
-    updateStorageStatus(fbConnected ? 'connected' : 'disconnected');
+    if (!syncing) updateStorageStatus(fbConnected ? 'connected' : 'disconnected');
   });
 
   fbRef.on('value', (snapshot) => {
     if (!fbInitDone) return;
+    if (syncing) return; // don't interrupt manual sync
     const remote = snapshot.val();
     if (!remote || !remote.products) return;
 
-    // Detect if this is our own echo (compare counts quickly)
     const localSum = (DB.ids?.sales || 0) + (DB.ids?.products || 0);
     const remoteSum = (remote.ids?.sales || 0) + (remote.ids?.products || 0);
     const localSaleCount = (DB.sales || []).length;
@@ -738,14 +810,20 @@ function startRealtimeSync() {
     const remoteCustCount = (remote.customers || []).length;
 
     if (localSum === remoteSum && localSaleCount === remoteSaleCount && localCustCount === remoteCustCount) {
-      return; // same data, no need to re-render
+      return;
     }
 
-    // Remote has changed — adopt it
-    console.log('🔄 Syncing remote changes...');
+    // 🔒 Don't interrupt if user is in a modal — just update DB silently
+    const modalRoot = document.getElementById('modal-root');
+    const modalOpen = modalRoot && modalRoot.innerHTML.trim().length > 0;
+
+    console.log('🔄 Syncing remote changes...', modalOpen ? '(silent - modal open)' : '');
     DB = remote;
     migrateDB();
     cacheLocal();
+
+    if (modalOpen) return;
+
     try {
       updateUserBox();
       buildNav();
@@ -2631,7 +2709,7 @@ function renderSettingsBody() {
     if (q) users = users.filter(u => (u.username||'').toLowerCase().includes(q) || (u.name||'').toLowerCase().includes(q) || (u.role||'').toLowerCase().includes(q));
     body.innerHTML = `<div class="card" style="margin-bottom:14px"><div class="row" style="justify-content:space-between;margin-bottom:12px"><h3 style="margin:0">Users & Roles</h3><button class="ios-pill blue sm" onclick="showAddUser()">+ Add User</button></div>${users.length ? `<div class="ios-table-wrap"><table class="ios-table"><thead><tr><th>#</th><th>Photo</th><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th>Actions</th></tr></thead><tbody>${users.map(u => { const isMe = u.id===currentUser.id; const av = u.photo ? `<img src="${u.photo}" style="width:32px;height:32px;border-radius:50%;object-fit:cover">` : `<div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px">${esc((u.name||u.username).charAt(0).toUpperCase())}</div>`; return `<tr><td class="muted">${u.id}</td><td>${av}</td><td class="strong">${esc(u.username)} ${isMe?'<span class="muted small">(you)</span>':''}</td><td>${esc(u.name)}</td><td><span class="badge badge-${u.role}">${esc(u.role)}</span></td><td>${u.active ? '<span class="success strong">Active</span>' : '<span class="danger-c strong">Disabled</span>'}</td><td style="display:flex;gap:4px;flex-wrap:wrap"><button class="ios-pill sm" onclick="showEditUser(${u.id})">Edit</button><button class="ios-pill sm" onclick="showChangePassword(${u.id})">Password</button>${!isMe ? `<button class="ios-pill sm" onclick="toggleUserActive(${u.id})">${u.active?'Disable':'Enable'}</button>` : ''}${!isMe ? `<button class="ios-pill red sm" onclick="deleteUser(${u.id})">Delete</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<p class="muted center pad">No matching users</p>'}</div><div class="card"><h3>Role Permissions</h3><ul class="list"><li><div><b class="danger-c">Admin</b><div class="muted small">Full access</div></div></li><li><div><b class="warn">Manager</b><div class="muted small">Everything except Settings & Users</div></div></li><li><div><b class="primary-c">Cashier</b><div class="muted small">Sales, Phone Stock, Stock, Repairs, Shop Repair, Customers · cost hidden</div></div></li></ul></div>`;
   } else {
-    body.innerHTML = `<div class="card" style="max-width:600px;margin-bottom:14px;border-color:rgba(48,209,88,.4)"><h3>🔥 Firebase Realtime Database</h3><div style="padding:12px;background:rgba(48,209,88,.08);border-radius:var(--radius-md);margin-bottom:12px"><div class="strong success" style="margin-bottom:4px">${fbConnected ? '✓ Connected' : '⚠ Offline (using cache)'}</div><div class="muted small">Project: <b>${esc(firebaseConfig.projectId)}</b></div><div class="muted small">Node: <b>pos_data</b></div><div class="muted small">URL: <b>${esc(firebaseConfig.databaseURL.replace('https://','').split('.')[0])}.firebaseio.com</b></div></div><div class="row gap" style="flex-wrap:wrap"><button class="ios-pill green" onclick="saveToServer(true).then(()=>toast('Synced to Firebase','success'))">💾 Force Sync</button><button class="ios-pill" onclick="reloadFromServer()">🔄 Reload from Firebase</button></div></div><div class="card" style="max-width:600px;margin-bottom:14px"><h3>📤 Manual Backup</h3><div class="row gap" style="flex-wrap:wrap"><button class="ios-pill" onclick="exportJSON()">⬇ Download JSON</button><button class="ios-pill" onclick="importJSON()">⬆ Import JSON</button></div></div><div class="card danger-zone-card" style="max-width:600px"><h3>🗑 DANGER ZONE</h3><p class="danger-text" style="font-size:12px;margin-bottom:14px;font-weight:600">⚠️ <b>PERMANENT</b> · <b>CANNOT be undone</b></p><button class="ios-pill red red-pulse" onclick="resetData()">🗑 PERMANENTLY DELETE ALL DATA</button></div>`;
+    body.innerHTML = `<div class="card" style="max-width:600px;margin-bottom:14px;border-color:rgba(48,209,88,.4)"><h3>🔥 Firebase Realtime Database</h3><div style="padding:12px;background:rgba(48,209,88,.08);border-radius:var(--radius-md);margin-bottom:12px"><div class="strong success" style="margin-bottom:4px">${fbConnected ? '✓ Connected' : '⚠ Offline (using cache)'}</div><div class="muted small">Project: <b>${esc(firebaseConfig.projectId)}</b></div><div class="muted small">Node: <b>pos_data</b></div><div class="muted small">URL: <b>${esc(firebaseConfig.databaseURL.replace('https://','').split('.')[0])}.firebaseio.com</b></div></div><div class="row gap" style="flex-wrap:wrap"><button class="ios-pill green" onclick="manualSync()">🔄 Force Sync</button><button class="ios-pill" onclick="reloadFromServer()">📥 Reload from Firebase</button></div></div><div class="card" style="max-width:600px;margin-bottom:14px"><h3>📤 Manual Backup</h3><div class="row gap" style="flex-wrap:wrap"><button class="ios-pill" onclick="exportJSON()">⬇ Download JSON</button><button class="ios-pill" onclick="importJSON()">⬆ Import JSON</button></div></div><div class="card danger-zone-card" style="max-width:600px"><h3>🗑 DANGER ZONE</h3><p class="danger-text" style="font-size:12px;margin-bottom:14px;font-weight:600">⚠️ <b>PERMANENT</b> · <b>CANNOT be undone</b></p><button class="ios-pill red red-pulse" onclick="resetData()">🗑 PERMANENTLY DELETE ALL DATA</button></div>`;
   }
 }
 async function reloadFromServer() {
@@ -2780,7 +2858,7 @@ document.addEventListener('mousedown', (e) => {
 });
 
 /* ═══════════════════════════════════════════════════════════
-   INIT — Firebase boot
+   INIT
    ═══════════════════════════════════════════════════════════ */
 (async function init() {
   const cached = loadCache();
@@ -2814,7 +2892,6 @@ document.addEventListener('mousedown', (e) => {
     showLogin();
   }
 
-  // Enable realtime sync AFTER initial render (so we don't re-render mid-boot)
   fbInitDone = true;
   startRealtimeSync();
 })();
