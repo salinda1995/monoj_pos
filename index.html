@@ -218,7 +218,14 @@ select.ios-input{cursor:pointer;appearance:none;background-image:url("data:image
 .loading-screen{position:fixed;inset:0;z-index:7000;display:flex;align-items:center;justify-content:center;background:var(--bg-grad-1);flex-direction:column;gap:16px;color:var(--text)}
 .spinner{width:44px;height:44px;border:4px solid var(--glass-border);border-top-color:var(--blue);border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-@media print{body *{visibility:hidden}#receipt,#receipt *{visibility:visible}#receipt{display:block!important;position:absolute;left:0;top:0;font-family:'Courier New',monospace;color:#000;background:#fff;padding:0}#receipt .center{text-align:center}#receipt .row-line{display:flex;justify-content:space-between}#receipt hr{border:none;border-top:1px dashed #000;margin:4px 0}}
+@media print{
+  body *{visibility:hidden}
+  #receipt,#receipt *{visibility:visible}
+  #receipt{display:block!important;position:absolute;left:0;top:0;font-family:'Courier New',monospace;color:#000;background:#fff;padding:0}
+  #receipt .center{text-align:center}
+  #receipt .row-line{display:flex;justify-content:space-between}
+  #receipt hr{border:none;border-top:1px dashed #000;margin:4px 0}
+}
 #receipt{display:none}
 .modal-bg-danger{background:rgba(80,0,0,.72)!important}
 .modal.danger-pulse{border-color:var(--red)!important;box-shadow:0 0 60px rgba(255,69,58,.5),var(--shadow-lg);animation:dangerPulse 1.6s ease-in-out infinite}
@@ -467,7 +474,7 @@ body.sidebar-hidden .content{padding-left:54px}
       <button class="ios-btn danger" onclick="doLogout()">🚪 <span>Logout</span></button>
     </div>
     <div class="sidebar-footer">
-      <div><span class="version-chip" id="version-chip">v2.8</span></div>
+      <div><span class="version-chip" id="version-chip">v2.7</span></div>
       <div class="footer-line">
         powered by <a class="footer-link" href="https://www.lookmobile.online" target="_blank" rel="noopener">Look Mobile</a>
       </div>
@@ -500,11 +507,12 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const fbDB = firebase.database();
 const fbRef = fbDB.ref('pos_data');
-const fbResetRef = fbDB.ref('pos_reset_token');
+const fbResetRef = fbDB.ref('pos_reset_token'); // 🆕 Global reset broadcast
 
 const LS_KEY = 'phone_shop_pos_cache';
-const LS_RESET_TOKEN_KEY = 'pos_seen_reset_token';
-const POS_VERSION = 'v2.8';
+const LS_SAFE_KEY = 'phone_shop_pos_safety_backup';
+const LS_RESET_TOKEN_KEY = 'pos_seen_reset_token'; // 🆕 Local: last-seen reset token
+const POS_VERSION = 'v2.7';
 
 const DEFAULT_SETTINGS = { shop_name:'PHONE HUB', shop_address:'123 Main Street, Colombo', shop_phone:'077-0000000', currency:'LKR', low_stock:2, theme:'dark', shop_logo: null, print_size: '58mm' };
 const ROLE_PERMS = {
@@ -543,23 +551,30 @@ function initSidebar() { try { if (localStorage.getItem('pos_sidebar_hidden') ==
 initSidebar();
 
 /* ═══════════════════════════════════════════════════════════
-   🗑 WIPE ALL CACHES
+   🆕 CACHE MANAGEMENT — FULL WIPE
    ═══════════════════════════════════════════════════════════ */
 async function wipeAllCaches() {
+  // 1. localStorage — full clear
   try { localStorage.clear(); } catch(e) {}
+  // 2. sessionStorage — full clear
   try { sessionStorage.clear(); } catch(e) {}
+  // 3. IndexedDB — delete all databases
   try {
     if (indexedDB && indexedDB.databases) {
       const dbs = await indexedDB.databases();
-      for (const db of dbs) { if (db.name) { try { indexedDB.deleteDatabase(db.name); } catch(e) {} } }
+      for (const db of dbs) {
+        if (db.name) { try { indexedDB.deleteDatabase(db.name); } catch(e) {} }
+      }
     }
   } catch(e) {}
+  // 4. Service Workers — unregister all
   try {
     if ('serviceWorker' in navigator) {
       const regs = await navigator.serviceWorker.getRegistrations();
       for (const reg of regs) { try { await reg.unregister(); } catch(e) {} }
     }
   } catch(e) {}
+  // 5. CacheStorage — delete all caches
   try {
     if ('caches' in window) {
       const keys = await caches.keys();
@@ -568,70 +583,60 @@ async function wipeAllCaches() {
   } catch(e) {}
 }
 
-function isDBValid(db) {
-  if (!db || typeof db !== 'object') return false;
-  if (!Array.isArray(db.users) || !db.users.length) return false;
-  if (!Array.isArray(db.products)) return false;
-  if (!Array.isArray(db.sales)) return false;
-  if (!Array.isArray(db.customers)) return false;
-  return true;
+function saveSafetyBackup() { try { if (!DB || !DB.users || !DB.users.length) return; localStorage.setItem(LS_SAFE_KEY, JSON.stringify({ data: DB, ts: Date.now(), version: POS_VERSION })); } catch(e) {} }
+function loadSafetyBackup() { try { const r = localStorage.getItem(LS_SAFE_KEY); if (!r) return null; const p = JSON.parse(r); if (p && p.data && p.data.products && p.data.users && p.data.users.length) return p.data; } catch(e) {} return null; }
+function isDBValid(db) { if (!db || typeof db !== 'object') return false; if (!Array.isArray(db.users) || !db.users.length) return false; if (!Array.isArray(db.products)) return false; if (!Array.isArray(db.sales)) return false; if (!Array.isArray(db.customers)) return false; return true; }
+
+async function manualSync() {
+  if (syncing) { toast('Sync already running', 'info', 1500); return; }
+  if (!DB || !isDBValid(DB)) { toast('❌ Data invalid', 'error'); return; }
+  if (!confirm('🔄 Force Sync with Firebase?')) return;
+  syncing = true;
+  const icon = document.getElementById('sync-icon');
+  if (icon) icon.classList.add('spinning');
+  try {
+    updateStorageStatus('saving'); toast('Syncing...', 'info', 1500);
+    DB._lastSaved = Date.now(); saveSafetyBackup();
+    await fbRef.set(DB); await new Promise(r => setTimeout(r, 500));
+    const snap = await fbRef.once('value'); const remote = snap.val();
+    if (isDBValid(remote)) { DB = remote; migrateDB(); cacheLocal(); saveSafetyBackup(); }
+    if (currentUser) { updateUserBox(); buildNav(); buildMobileTabs(); render(); }
+    updateStorageStatus('connected'); toast('✅ Synced', 'success', 2500);
+  } catch (e) { updateStorageStatus('disconnected'); toast('❌ Sync failed', 'error', 4000); }
+  finally { syncing = false; if (icon) icon.classList.remove('spinning'); }
 }
 
-/* ═══════════════════════════════════════════════════════════
-   🔥 FIREBASE — SOURCE OF TRUTH (never push stale cache)
-   ═══════════════════════════════════════════════════════════ */
 async function loadFromServer() {
-  // Step 1: Try Firebase FIRST — it's the single source of truth
-  let data = null, fbError = null;
   try {
-    const snap = await fbRef.once('value');
-    data = snap.val();
-  } catch(e) { fbError = e; }
-
-  // Case 1: Firebase has valid data → USE IT (authoritative)
-  if (isDBValid(data)) {
-    DB = data; migrateDB(); cacheLocal();
-    fbConnected = true; updateStorageStatus('connected');
-    return { ok: true, hasData: true };
-  }
-
-  // Case 2: Firebase read failed (offline)
-  if (fbError) {
-    console.warn('⚠️ Firebase read failed:', fbError);
     const c = loadCache();
-    if (isDBValid(c)) {
-      DB = c; migrateDB();
-      fbConnected = false; updateStorageStatus('disconnected');
-      return { ok: true, hasData: true, offline: true };
-    }
-    return { ok: false, error: fbError.message };
-  }
+    if (isDBValid(c)) { DB = c; migrateDB(); }
 
-  // Case 3: Firebase is EMPTY → create fresh and push
-  // ⚠️ NEVER restore from local cache — that's how data comes back from the dead
-  console.log('🆕 Firebase is empty — creating fresh DB');
-  DB = createFreshDB(); migrateDB();
-  try { await fbRef.set(DB); } catch(e) { console.warn('push failed', e); }
-  cacheLocal();
-  fbConnected = true; updateStorageStatus('connected');
-  return { ok: true, hasData: false, fresh: true };
+    const snap = await fbRef.once('value');
+    const data = snap.val();
+
+    if (isDBValid(data)) { DB = data; migrateDB(); cacheLocal(); saveSafetyBackup(); fbConnected = true; updateStorageStatus('connected'); return { ok: true, hasData: true }; }
+    if (isDBValid(DB)) { await saveToServer(true); fbConnected = true; updateStorageStatus('connected'); return { ok: true, hasData: true, pushed: true }; }
+
+    const b = loadSafetyBackup();
+    if (isDBValid(b)) { DB = b; migrateDB(); cacheLocal(); await saveToServer(true); fbConnected = true; updateStorageStatus('connected'); toast('♻️ Restored from backup', 'success', 3000); return { ok: true, hasData: true, restored: true }; }
+
+    DB = createFreshDB(); migrateDB(); cacheLocal(); await saveToServer(true);
+    fbConnected = true; updateStorageStatus('connected'); return { ok: true, hasData: false };
+  } catch (e) {
+    fbConnected = false; updateStorageStatus('disconnected');
+    if (isDBValid(DB)) return { ok: true, hasData: true, offline: true };
+    const b = loadSafetyBackup();
+    if (isDBValid(b)) { DB = b; migrateDB(); return { ok: true, hasData: true, offline: true, restored: true }; }
+    return { ok: false, error: e.message };
+  }
 }
 
 async function saveToServer(immediate = false) {
   if (!DB || !isDBValid(DB)) return;
+  cacheLocal(); saveSafetyBackup();
   if (!immediate) { if (writeTimer) clearTimeout(writeTimer); writeTimer = setTimeout(() => saveToServer(true), 250); return; }
-  try {
-    updateStorageStatus('saving');
-    DB._lastSaved = Date.now();
-    await fbRef.set(DB);
-    cacheLocal();
-    fbConnected = true;
-    updateStorageStatus('connected');
-  } catch (e) {
-    fbConnected = false;
-    updateStorageStatus('disconnected');
-    console.error('Save failed:', e);
-  }
+  try { updateStorageStatus('saving'); DB._lastSaved = Date.now(); await fbRef.set(DB); fbConnected = true; updateStorageStatus('connected'); }
+  catch (e) { fbConnected = false; updateStorageStatus('disconnected'); }
 }
 
 function updateStorageStatus(state) {
@@ -648,96 +653,12 @@ function updateStorageStatus(state) {
     else { badge.classList.add('offline'); bt.textContent = '⚠ Offline'; }
   }
 }
+
 function cacheLocal() { try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); } catch(e) {} }
 function loadCache() { try { const r = localStorage.getItem(LS_KEY); if (r) return JSON.parse(r); } catch(e) {} return null; }
 
-async function manualSync() {
-  if (syncing) { toast('Sync already running', 'info', 1500); return; }
-  if (!DB || !isDBValid(DB)) { toast('❌ Data invalid', 'error'); return; }
-  if (!confirm('🔄 Force Sync with Firebase?')) return;
-  syncing = true;
-  const icon = document.getElementById('sync-icon');
-  if (icon) icon.classList.add('spinning');
-  try {
-    updateStorageStatus('saving'); toast('Syncing...', 'info', 1500);
-    DB._lastSaved = Date.now();
-    await fbRef.set(DB);
-    await new Promise(r => setTimeout(r, 500));
-    const snap = await fbRef.once('value'); const remote = snap.val();
-    if (isDBValid(remote)) { DB = remote; migrateDB(); cacheLocal(); }
-    if (currentUser) { updateUserBox(); buildNav(); buildMobileTabs(); render(); }
-    updateStorageStatus('connected'); toast('✅ Synced', 'success', 2500);
-  } catch (e) { updateStorageStatus('disconnected'); toast('❌ Sync failed', 'error', 4000); }
-  finally { syncing = false; if (icon) icon.classList.remove('spinning'); }
-}
-
 /* ═══════════════════════════════════════════════════════════
-   🔄 REALTIME SYNC — handles empty Firebase + user removal
-   ═══════════════════════════════════════════════════════════ */
-function startRealtimeSync() {
-  fbDB.ref('.info/connected').on('value', (s) => {
-    fbConnected = s.val() === true;
-    if (!syncing) updateStorageStatus(fbConnected ? 'connected' : 'disconnected');
-  });
-
-  fbRef.on('value', async (snap) => {
-    if (!fbInitDone || syncing) return;
-    const remote = snap.val();
-
-    // 🆕 Firebase went EMPTY → someone deleted it → create fresh
-    if (!isDBValid(remote)) {
-      console.log('🚨 Firebase went empty — creating fresh');
-      DB = createFreshDB();
-      migrateDB();
-      cacheLocal();
-      try { await fbRef.set(DB); } catch(e) {}
-      // Force logout — user data is gone
-      if (currentUser) {
-        currentUser = null;
-        try { sessionStorage.removeItem('pos_user_id'); } catch(e) {}
-        document.getElementById('app-layout').classList.add('hidden');
-        document.getElementById('login-screen').classList.remove('hidden');
-        showLogin();
-        toast('🗑 Data was reset — please sign in again', 'warn', 4000);
-      }
-      return;
-    }
-
-    // Compare to detect changes
-    const ls = (DB.ids?.sales||0)+(DB.ids?.products||0);
-    const rs = (remote.ids?.sales||0)+(remote.ids?.products||0);
-    if (ls === rs && (DB.sales||[]).length === (remote.sales||[]).length && (DB.customers||[]).length === (remote.customers||[]).length) return;
-
-    const modalOpen = document.getElementById('modal-root').innerHTML.trim().length > 0;
-    DB = remote; migrateDB(); cacheLocal();
-
-    // 🆕 If currentUser no longer exists in new data → force logout
-    if (currentUser) {
-      const updated = DB.users.find(u => u.id === currentUser.id && u.active);
-      if (updated) {
-        currentUser = updated;
-      } else {
-        currentUser = null;
-        try { sessionStorage.removeItem('pos_user_id'); } catch(e) {}
-        document.getElementById('app-layout').classList.add('hidden');
-        document.getElementById('login-screen').classList.remove('hidden');
-        showLogin();
-        toast('Your account was removed — please sign in', 'warn', 4000);
-        return;
-      }
-    }
-
-    if (modalOpen) return;
-    try {
-      updateUserBox(); buildNav(); buildMobileTabs(); render();
-      updateStorageStatus('connected');
-      toast('Synced from another device', 'info', 1800);
-    } catch(e) {}
-  });
-}
-
-/* ═══════════════════════════════════════════════════════════
-   🔄 RESET TOKEN — broadcasts to ALL devices
+   🆕 RESET TOKEN BROADCAST — clears cache on all devices
    ═══════════════════════════════════════════════════════════ */
 function startResetListener() {
   fbResetRef.on('value', async (snap) => {
@@ -745,15 +666,31 @@ function startResetListener() {
     if (!remoteToken) return;
     let localToken = '';
     try { localToken = localStorage.getItem(LS_RESET_TOKEN_KEY) || ''; } catch(e) {}
+    // If token matches — nothing to do
     if (localToken === remoteToken) return;
-
-    console.log('🚨 Reset token changed — wiping local cache on this device');
+    // 🆕 Token changed — someone reset data → WIPE this device's cache
+    console.log('🚨 Reset token changed — wiping local cache');
     syncing = true;
     try { await wipeAllCaches(); } catch(e) {}
-    try { localStorage.setItem(LS_RESET_TOKEN_KEY, remoteToken); } catch(e) {}
-
-    document.body.innerHTML = `<div style="position:fixed;inset:0;background:#0a0a0f;color:#fff;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:20px;z-index:99999;font-family:system-ui"><div style="font-size:64px">🗑️</div><h1 style="font-size:22px;margin:0;text-align:center;padding:0 20px">Data Was Reset</h1><p style="color:#888;max-width:340px;text-align:center;font-size:13px;line-height:1.6;padding:0 20px">This device's cache was cleared. Reloading...</p></div>`;
+    // Small delay so user sees a message
+    if (currentUser) {
+      document.body.innerHTML = `<div style="position:fixed;inset:0;background:#0a0a0f;color:#fff;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:20px;z-index:99999;font-family:system-ui"><div style="font-size:64px">🗑️</div><h1 style="font-size:22px;margin:0">Data Was Reset</h1><p style="color:#888;max-width:340px;text-align:center;font-size:13px;line-height:1.6">This device's cache has been cleared by another device. Reloading...</p></div>`;
+    }
     setTimeout(() => location.reload(), 2000);
+  });
+}
+
+function startRealtimeSync() {
+  fbDB.ref('.info/connected').on('value', (s) => { fbConnected = s.val() === true; if (!syncing) updateStorageStatus(fbConnected ? 'connected' : 'disconnected'); });
+  fbRef.on('value', (snap) => {
+    if (!fbInitDone || syncing) return;
+    const remote = snap.val(); if (!isDBValid(remote)) return;
+    const ls = (DB.ids?.sales||0)+(DB.ids?.products||0), rs = (remote.ids?.sales||0)+(remote.ids?.products||0);
+    if (ls === rs && (DB.sales||[]).length === (remote.sales||[]).length && (DB.customers||[]).length === (remote.customers||[]).length) return;
+    const modalOpen = document.getElementById('modal-root').innerHTML.trim().length > 0;
+    DB = remote; migrateDB(); cacheLocal(); saveSafetyBackup();
+    if (modalOpen) return;
+    try { updateUserBox(); buildNav(); buildMobileTabs(); render(); updateStorageStatus('connected'); toast('Synced from another device', 'info', 1800); } catch(e) {}
   });
 }
 
@@ -761,13 +698,7 @@ function createFreshDB() {
   const d = { products:[], stock_units:[], accessories:[], customers:[], sales:[], sale_items:[], repairs:[], credit_payments:[], returns:[], stock_adjustments:[], shops:[], shop_repairs:[], shop_payments:[], suppliers:[], orders:[], order_items:[], users:[], settings:{...DEFAULT_SETTINGS}, ids:{products:1,stock_units:1,accessories:1,customers:1,sales:1,sale_items:1,repairs:1,credit_payments:1,returns:1,stock_adjustments:1,shops:1,shop_repairs:1,shop_payments:1,suppliers:1,orders:1,order_items:1,users:1} };
   initUsers(d); return d;
 }
-function initUsers(d) {
-  d.users = [
-    {id:1,username:'admin',password:hashPassword('admin123'),name:'Administrator',role:'admin',active:true,photo:null,created_at:now()},
-    {id:2,username:'cashier',password:hashPassword('cashier123'),name:'Cashier',role:'cashier',active:true,photo:null,created_at:now()}
-  ];
-  d.ids.users = 3;
-}
+function initUsers(d) { d.users = [{id:1,username:'admin',password:hashPassword('admin123'),name:'Administrator',role:'admin',active:true,photo:null,created_at:now()},{id:2,username:'cashier',password:hashPassword('cashier123'),name:'Cashier',role:'cashier',active:true,photo:null,created_at:now()}]; d.ids.users = 3; }
 function makeProductCode(id){ return 'PHN-' + String(id).padStart(4,'0'); }
 function makeAccessoryCode(id){ return 'ACC-' + String(id).padStart(4,'0'); }
 
@@ -798,6 +729,7 @@ function migrateDB() {
     if (it.part === undefined) it.part = '';
     if (it.note === undefined) it.note = '';
   });
+  // Rebuild autocomplete history cache
   rebuildOrderHistory();
 }
 function save() { saveToServer(false); }
@@ -813,20 +745,30 @@ function getSaleReturnTotal(saleId) { return DB.returns.filter(r => r.sale_id ==
 function calcShopOutstanding(s) { const reps = DB.shop_repairs.filter(r => r.shop_id === s.id); const t = reps.reduce((b,r)=>b+(Number(r.cost)||0),0); const rc = reps.reduce((b,r)=>b+(Number(r.received)||0),0); const pmts = (DB.shop_payments||[]).filter(p=>p.shop_id === s.id).reduce((b,p)=>b+(Number(p.amount)||0),0); return Math.max(0, t - rc - pmts); }
 function calcShopStats(s) { const reps = DB.shop_repairs.filter(r => r.shop_id === s.id); const payments = (DB.shop_payments||[]).filter(p=>p.shop_id === s.id); const billed = reps.reduce((b,r)=>b+(Number(r.cost)||0),0); const fromRepairs = reps.reduce((b,r)=>b+(Number(r.received)||0),0); const fromPayments = payments.reduce((b,p)=>b+(Number(p.amount)||0),0); const received = fromRepairs + fromPayments; return { reps, payments, billed, received, fromRepairs, fromPayments, outstanding: Math.max(0, billed - received) }; }
 
+/* 🆕 ORDER HISTORY AUTOCOMPLETE CACHE */
 function rebuildOrderHistory() {
   const brands = new Set();
   const modelsByBrand = {};
   const partsByBrandModel = {};
   DB.order_items.forEach(it => {
-    const b = (it.brand||'').trim(); const m = (it.model||'').trim(); const p = (it.part||'').trim();
+    const b = (it.brand||'').trim();
+    const m = (it.model||'').trim();
+    const p = (it.part||'').trim();
     if (b) brands.add(b);
     if (b && m) { if (!modelsByBrand[b]) modelsByBrand[b] = new Set(); modelsByBrand[b].add(m); }
     if (b && m && p) { const key = b + '|' + m; if (!partsByBrandModel[key]) partsByBrandModel[key] = new Set(); partsByBrandModel[key].add(p); }
   });
-  DB.products.forEach(prod => { const b = (prod.brand||'').trim(); const m = (prod.model||'').trim(); if (b) brands.add(b); if (b && m) { if (!modelsByBrand[b]) modelsByBrand[b] = new Set(); modelsByBrand[b].add(m); } });
+  // Also add from products
+  DB.products.forEach(prod => {
+    const b = (prod.brand||'').trim(); const m = (prod.model||'').trim();
+    if (b) brands.add(b);
+    if (b && m) { if (!modelsByBrand[b]) modelsByBrand[b] = new Set(); modelsByBrand[b].add(m); }
+  });
   cachedBrandHistory = [...brands].sort();
-  cachedModelHistory = {}; Object.keys(modelsByBrand).forEach(k => { cachedModelHistory[k] = [...modelsByBrand[k]].sort(); });
-  cachedPartHistory = {}; Object.keys(partsByBrandModel).forEach(k => { cachedPartHistory[k] = [...partsByBrandModel[k]].sort(); });
+  cachedModelHistory = {};
+  Object.keys(modelsByBrand).forEach(k => { cachedModelHistory[k] = [...modelsByBrand[k]].sort(); });
+  cachedPartHistory = {};
+  Object.keys(partsByBrandModel).forEach(k => { cachedPartHistory[k] = [...partsByBrandModel[k]].sort(); });
 }
 
 function applyLogo() { const logo = DB?.settings?.shop_logo; const sw = document.getElementById('sidebar-logo-wrap'); const lw = document.getElementById('login-logo-wrap'); const h = logo ? `<img src="${logo}" class="brand-logo" alt="">` : `<div class="brand-icon">📱</div>`; if (sw) sw.innerHTML = h; if (lw) lw.innerHTML = h; }
@@ -1026,13 +968,22 @@ document.addEventListener('keydown', e => {
       const idx = allFields.indexOf(e.target);
       if (idx < 0) return;
       e.preventDefault();
-      if (idx < allFields.length - 1) { const next = allFields[idx + 1]; next.focus(); try { if (next.select && next.type !== 'date') next.select(); } catch(_) {} }
-      else { const ok = document.getElementById('modal-ok'); if (ok) ok.click(); }
+      if (idx < allFields.length - 1) {
+        const next = allFields[idx + 1];
+        next.focus();
+        try { if (next.select && next.type !== 'date') next.select(); } catch(_) {}
+      } else {
+        const ok = document.getElementById('modal-ok');
+        if (ok) ok.click();
+      }
       return;
     }
     return;
   }
-  if (currentView === 'sales' && tag === 'input' && e.target.id !== 'sales-search-input') { e.preventDefault(); completeSale(); }
+  if (currentView === 'sales' && tag === 'input' && e.target.id !== 'sales-search-input') {
+    e.preventDefault();
+    completeSale();
+  }
 });
 
 /* DASHBOARD */
@@ -1294,6 +1245,7 @@ function completeSale() {
   const method = document.getElementById('payment').value;
   const preName = document.getElementById('cust-name').value.trim();
   const prePhone = document.getElementById('cust-phone').value.trim();
+
   if (balance > 0.01) {
     const existing = prePhone ? DB.customers.find(c => (c.phone||'').trim() === prePhone) : null;
     const fName = preName || (existing?.name || '');
@@ -1464,7 +1416,8 @@ function renderReturnsList() {
 }
 
 /* PHONE STOCK */
-let phoneStockTab = 'products', phoneStockQuery = '';
+let phoneStockTab = 'products';
+let phoneStockQuery = '';
 function renderPhoneStock(root) {
   const cm = currentUser.role === 'admin' || currentUser.role === 'manager';
   const dupes = findDuplicateProducts();
@@ -1820,14 +1773,32 @@ function renderOrdersBody() {
     const items = DB.order_items.filter(it => it.order_id === o.id);
     const itemSummary = items.map(it => {
       const sup = it.supplier_id ? DB.suppliers.find(s=>s.id===it.supplier_id) : null;
-      if (it.status === 'requested' && sup) { return `<div class="bill-match-item" style="background:rgba(10,132,255,.08);padding:5px 8px;border-radius:6px"><div style="flex:1;opacity:.65">📤 <span class="small">Requested to <b>${esc(sup.name)}</b> — ${esc((it.requested_at||'').slice(0,16))}</span></div></div>`; }
-      if (it.status === 'received') { return `<div class="bill-match-item" style="background:rgba(48,209,88,.08);padding:5px 8px;border-radius:6px"><div style="flex:1;opacity:.65">✅ <span class="small">Received — ${esc(it.description)} × ${it.qty}</span></div></div>`; }
+      if (it.status === 'requested' && sup) {
+        return `<div class="bill-match-item" style="background:rgba(10,132,255,.08);padding:5px 8px;border-radius:6px"><div style="flex:1;opacity:.65">📤 <span class="small">Requested to <b>${esc(sup.name)}</b> — ${esc((it.requested_at||'').slice(0,16))}</span></div></div>`;
+      }
+      if (it.status === 'received') {
+        return `<div class="bill-match-item" style="background:rgba(48,209,88,.08);padding:5px 8px;border-radius:6px"><div style="flex:1;opacity:.65">✅ <span class="small">Received — ${esc(it.description)} × ${it.qty}</span></div></div>`;
+      }
       const stat = it.status === 'not_found' ? '❌' : '⏳';
       return `<div class="bill-match-item"><div style="flex:1">${stat} ${esc(it.description)} <span class="muted small">× ${it.qty}</span>${sup?` <span class="code-chip" style="font-size:9px">${esc(sup.name)}</span>`:''}</div></div>`;
     }).join('');
     const pendingCount = items.filter(it => it.status === 'pending' || it.status === 'not_found').length;
     const requestedCount = items.filter(it => it.status === 'requested').length;
-    return `<div class="bill-match"><div class="bill-match-head"><div style="flex:1;min-width:0"><div class="row gap" style="margin-bottom:4px;flex-wrap:wrap"><span class="code-chip" style="background:rgba(10,132,255,.2)">${esc(o.order_no)}</span>${orderStatusBadge(o.status)}</div><div class="muted small">📅 ${esc(o.created_at)} · 👤 ${esc(o.customer_name||'Walk-in')}${o.customer_phone?' · 📞 '+esc(o.customer_phone):''}</div></div><div style="text-align:right;flex-shrink:0"><div class="strong">${items.length} item${items.length!==1?'s':''}</div><div class="muted small">${pendingCount} pending${requestedCount?` · ${requestedCount} requested`:''}</div></div></div><div class="bill-match-items">${itemSummary}</div><div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap"><button class="ios-pill blue sm" onclick="showOrderDetail(${o.id})">👁 View / Manage</button>${o.status === 'received' ? `<button class="ios-pill green sm" onclick="markOrderDelivered(${o.id})">✅ Delivered</button>` : ''}<button class="ios-pill red sm" onclick="deleteOrder(${o.id})">🗑</button></div></div>`;
+    return `<div class="bill-match">
+      <div class="bill-match-head">
+        <div style="flex:1;min-width:0">
+          <div class="row gap" style="margin-bottom:4px;flex-wrap:wrap"><span class="code-chip" style="background:rgba(10,132,255,.2)">${esc(o.order_no)}</span>${orderStatusBadge(o.status)}</div>
+          <div class="muted small">📅 ${esc(o.created_at)} · 👤 ${esc(o.customer_name||'Walk-in')}${o.customer_phone?' · 📞 '+esc(o.customer_phone):''}</div>
+        </div>
+        <div style="text-align:right;flex-shrink:0"><div class="strong">${items.length} item${items.length!==1?'s':''}</div><div class="muted small">${pendingCount} pending${requestedCount?` · ${requestedCount} requested`:''}</div></div>
+      </div>
+      <div class="bill-match-items">${itemSummary}</div>
+      <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">
+        <button class="ios-pill blue sm" onclick="showOrderDetail(${o.id})">👁 View / Manage</button>
+        ${o.status === 'received' ? `<button class="ios-pill green sm" onclick="markOrderDelivered(${o.id})">✅ Delivered</button>` : ''}
+        <button class="ios-pill red sm" onclick="deleteOrder(${o.id})">🗑</button>
+      </div>
+    </div>`;
   }).join('');
 }
 function ordersSetStatus(s){ ordersStatusFilter = s; renderOrdersBody(); }
@@ -1840,15 +1811,59 @@ function showOrderDetail(id) {
   const requestedItems = items.filter(it => it.status === 'requested');
   const notFoundItems = items.filter(it => it.status === 'not_found');
   const receivedItems = items.filter(it => it.status === 'received');
+
   const renderItem = (it) => {
     const sup = it.supplier_id ? DB.suppliers.find(s=>s.id===it.supplier_id) : null;
     const triedNames = (it.tried_suppliers||[]).map(sid => DB.suppliers.find(s=>s.id===sid)?.name).filter(Boolean);
-    if (it.status === 'requested' && sup) { return `<div class="ord-item requested"><div class="ord-item-info"><div class="strong small">${esc(it.description)} × ${it.qty}</div><div class="muted small">📤 Requested to <b>${esc(sup.name)}</b> — ${esc((it.requested_at||'').slice(0,16))}</div>${it.note?`<div class="muted small">📝 ${esc(it.note)}</div>`:''}${triedNames.length?`<div class="muted small" style="font-size:10px">Tried: ${triedNames.map(esc).join(', ')}</div>`:''}</div><div class="ord-item-actions"><button class="ios-pill red xs" onclick="markOrderItemNotFound(${it.id})">❌ Not Found</button><button class="ios-pill green xs" onclick="markOrderItemReceived(${it.id})">✅ Received</button></div></div>`; }
-    if (it.status === 'received') { return `<div class="ord-item received"><div class="ord-item-info"><div class="strong small">✅ ${esc(it.description)} × ${it.qty}</div><div class="muted small">Received — ${esc((it.received_at||'').slice(0,16))}${sup?` · from ${esc(sup.name)}`:''}</div></div></div>`; }
-    if (it.status === 'not_found') { return `<div class="ord-item not_found"><input type="checkbox" class="ord-item-chk" data-iid="${it.id}" onchange="updateOrderSelectionUI()"><div class="ord-item-info"><div class="strong small">❌ ${esc(it.description)} × ${it.qty}</div><div class="muted small">Not found — order from another supplier</div>${triedNames.length?`<div class="muted small" style="font-size:10px">Tried: ${triedNames.map(esc).join(', ')}</div>`:''}</div></div>`; }
-    return `<div class="ord-item pending"><input type="checkbox" class="ord-item-chk" data-iid="${it.id}" onchange="updateOrderSelectionUI()"><div class="ord-item-info"><div class="strong small">⏳ ${esc(it.description)} × ${it.qty}</div>${it.note?`<div class="muted small">📝 ${esc(it.note)}</div>`:''}${triedNames.length?`<div class="muted small" style="font-size:10px">Tried: ${triedNames.map(esc).join(', ')}</div>`:''}</div></div>`;
+    if (it.status === 'requested' && sup) {
+      return `<div class="ord-item requested">
+        <div class="ord-item-info">
+          <div class="strong small">${esc(it.description)} × ${it.qty}</div>
+          <div class="muted small">📤 Requested to <b>${esc(sup.name)}</b> — ${esc((it.requested_at||'').slice(0,16))}</div>
+          ${it.note?`<div class="muted small">📝 ${esc(it.note)}</div>`:''}
+          ${triedNames.length?`<div class="muted small" style="font-size:10px">Tried: ${triedNames.map(esc).join(', ')}</div>`:''}
+        </div>
+        <div class="ord-item-actions">
+          <button class="ios-pill red xs" onclick="markOrderItemNotFound(${it.id})">❌ Not Found</button>
+          <button class="ios-pill green xs" onclick="markOrderItemReceived(${it.id})">✅ Received</button>
+        </div>
+      </div>`;
+    }
+    if (it.status === 'received') {
+      return `<div class="ord-item received"><div class="ord-item-info"><div class="strong small">✅ ${esc(it.description)} × ${it.qty}</div><div class="muted small">Received — ${esc((it.received_at||'').slice(0,16))}${sup?` · from ${esc(sup.name)}`:''}</div></div></div>`;
+    }
+    if (it.status === 'not_found') {
+      return `<div class="ord-item not_found">
+        <input type="checkbox" class="ord-item-chk" data-iid="${it.id}" onchange="updateOrderSelectionUI()">
+        <div class="ord-item-info">
+          <div class="strong small">❌ ${esc(it.description)} × ${it.qty}</div>
+          <div class="muted small">Not found — order from another supplier</div>
+          ${triedNames.length?`<div class="muted small" style="font-size:10px">Tried: ${triedNames.map(esc).join(', ')}</div>`:''}
+        </div>
+      </div>`;
+    }
+    return `<div class="ord-item pending">
+      <input type="checkbox" class="ord-item-chk" data-iid="${it.id}" onchange="updateOrderSelectionUI()">
+      <div class="ord-item-info">
+        <div class="strong small">⏳ ${esc(it.description)} × ${it.qty}</div>
+        ${it.note?`<div class="muted small">📝 ${esc(it.note)}</div>`:''}
+        ${triedNames.length?`<div class="muted small" style="font-size:10px">Tried: ${triedNames.map(esc).join(', ')}</div>`:''}
+      </div>
+    </div>`;
   };
-  openModal(`📋 ${o.order_no}`, `<div style="background:var(--glass-hover);padding:12px;border-radius:var(--radius-md);margin-bottom:14px"><div class="row gap" style="flex-wrap:wrap;margin-bottom:6px">${orderStatusBadge(o.status)}</div><div class="muted small">📅 ${esc(o.created_at)}</div><div class="muted small">👤 ${esc(o.customer_name||'Walk-in')}${o.customer_phone?' · 📞 '+esc(o.customer_phone):''}</div>${o.notes?`<div class="muted small">📝 ${esc(o.notes)}</div>`:''}</div>${(pendingItems.length + notFoundItems.length) ? `<div class="row gap" style="justify-content:space-between;margin-bottom:8px"><div class="field-label" style="margin:0">⏳ Ready to Request (${pendingItems.length + notFoundItems.length})</div><button class="ios-pill wa sm" id="ord-req-btn" onclick="requestSelectedFromDetail()">📤 Request Selected</button></div><div id="ord-pending-area">${pendingItems.map(renderItem).join('')}${notFoundItems.map(renderItem).join('')}</div>` : ''}${requestedItems.length ? `<div class="field-label" style="margin-top:14px;margin-bottom:8px">📤 Sent to Supplier (${requestedItems.length})</div>${requestedItems.map(renderItem).join('')}` : ''}${receivedItems.length ? `<div class="field-label" style="margin-top:14px;margin-bottom:8px">✅ Received (${receivedItems.length})</div>${receivedItems.map(renderItem).join('')}` : ''}<div class="row gap" style="margin-top:14px;justify-content:flex-end"><button class="ios-pill ghost" onclick="closeModal()">Close</button></div>`, () => {}, 'Close');
+
+  openModal(`📋 ${o.order_no}`, `
+    <div style="background:var(--glass-hover);padding:12px;border-radius:var(--radius-md);margin-bottom:14px">
+      <div class="row gap" style="flex-wrap:wrap;margin-bottom:6px">${orderStatusBadge(o.status)}</div>
+      <div class="muted small">📅 ${esc(o.created_at)}</div>
+      <div class="muted small">👤 ${esc(o.customer_name||'Walk-in')}${o.customer_phone?' · 📞 '+esc(o.customer_phone):''}</div>
+      ${o.notes?`<div class="muted small">📝 ${esc(o.notes)}</div>`:''}
+    </div>
+    ${(pendingItems.length + notFoundItems.length) ? `<div class="row gap" style="justify-content:space-between;margin-bottom:8px"><div class="field-label" style="margin:0">⏳ Ready to Request (${pendingItems.length + notFoundItems.length})</div><button class="ios-pill wa sm" id="ord-req-btn" onclick="requestSelectedFromDetail()">📤 Request Selected</button></div><div id="ord-pending-area">${pendingItems.map(renderItem).join('')}${notFoundItems.map(renderItem).join('')}</div>` : ''}
+    ${requestedItems.length ? `<div class="field-label" style="margin-top:14px;margin-bottom:8px">📤 Sent to Supplier (${requestedItems.length})</div>${requestedItems.map(renderItem).join('')}` : ''}
+    ${receivedItems.length ? `<div class="field-label" style="margin-top:14px;margin-bottom:8px">✅ Received (${receivedItems.length})</div>${receivedItems.map(renderItem).join('')}` : ''}
+    <div class="row gap" style="margin-top:14px;justify-content:flex-end"><button class="ios-pill ghost" onclick="closeModal()">Close</button></div>
+  `, () => {}, 'Close');
 }
 function updateOrderSelectionUI() {
   const btn = document.getElementById('ord-req-btn'); if (!btn) return;
@@ -1860,7 +1875,20 @@ function requestSelectedFromDetail() {
   const selected = [...document.querySelectorAll('.ord-item-chk:checked')].map(c => Number(c.dataset.iid));
   if (!selected.length) { toast('Select items first','error'); return; }
   if (!DB.suppliers.length) { toast('No suppliers added yet','error',3500); return; }
-  const html = `<div class="credit-notice" style="background:rgba(37,211,102,.12);border-color:rgba(37,211,102,.5);color:var(--wa);font-size:12px">Send <b>${selected.length}</b> item(s) to:</div><div class="form-grid" style="gap:6px">${DB.suppliers.map(s => { const phoneOk = !!s.phone; return `<div class="user-select-row" onclick="${phoneOk?`closeModal();sendOrderItemsToSupplier([${selected.join(',')}],${s.id})`:''}" style="cursor:${phoneOk?'pointer':'not-allowed'};${phoneOk?'':'opacity:.5'}"><div class="user-select-avatar" style="background:linear-gradient(135deg,var(--wa),var(--teal))">🚚</div><div class="user-select-info"><div class="strong">${esc(s.name)}</div><div class="muted small">${phoneOk ? '📞 '+esc(s.phone) : '<span class="danger-c">⚠ No phone saved</span>'}</div></div><button class="ios-pill wa sm" ${phoneOk?'':'disabled'}>💬 Send</button></div>`; }).join('')}</div>`;
+  const html = `
+    <div class="credit-notice" style="background:rgba(37,211,102,.12);border-color:rgba(37,211,102,.5);color:var(--wa);font-size:12px">
+      Send <b>${selected.length}</b> item(s) to:
+    </div>
+    <div class="form-grid" style="gap:6px">
+      ${DB.suppliers.map(s => {
+        const phoneOk = !!s.phone;
+        return `<div class="user-select-row" onclick="${phoneOk?`closeModal();sendOrderItemsToSupplier([${selected.join(',')}],${s.id})`:''}" style="cursor:${phoneOk?'pointer':'not-allowed'};${phoneOk?'':'opacity:.5'}">
+          <div class="user-select-avatar" style="background:linear-gradient(135deg,var(--wa),var(--teal))">🚚</div>
+          <div class="user-select-info"><div class="strong">${esc(s.name)}</div><div class="muted small">${phoneOk ? '📞 '+esc(s.phone) : '<span class="danger-c">⚠ No phone saved</span>'}</div></div>
+          <button class="ios-pill wa sm" ${phoneOk?'':'disabled'}>💬 Send</button>
+        </div>`;
+      }).join('')}
+    </div>`;
   openModal('📤 Choose Supplier', html, () => {}, 'Cancel');
 }
 function sendOrderItemsToSupplier(itemIds, supplierId) {
@@ -1873,11 +1901,21 @@ function sendOrderItemsToSupplier(itemIds, supplierId) {
   let msg = `🏪 *${cfg.shop_name}*\n`;
   if (cfg.shop_phone) msg += `📞 ${cfg.shop_phone}\n`;
   msg += `\n📅 ${now()}\n\n`;
-  items.forEach((it, i) => { msg += `*${i+1}. ${it.description}*`; if (it.note) msg += ` (${it.note})`; msg += `\n   Qty: *${it.qty}*\n\n`; });
+  items.forEach((it, i) => {
+    msg += `*${i+1}. ${it.description}*`;
+    if (it.note) msg += ` (${it.note})`;
+    msg += `\n   Qty: *${it.qty}*\n\n`;
+  });
   msg += `${L}\n✅ Please reply:\n• ✅ Available\n• ❌ Not available\n\n_Thank you!_ 🙏\nPOS - look mobile`;
   if (!confirm(`Send ${items.length} item(s) to ${s.name}?`)) return;
   window.open(`https://wa.me/${formatPhoneForWA(s.phone)}?text=${encodeURIComponent(msg)}`, '_blank');
-  items.forEach(it => { it.supplier_id = supplierId; it.status = 'requested'; it.requested_at = now(); if (!it.tried_suppliers) it.tried_suppliers = []; recalcOrderStatus(it.order_id); });
+  items.forEach(it => {
+    it.supplier_id = supplierId;
+    it.status = 'requested';
+    it.requested_at = now();
+    if (!it.tried_suppliers) it.tried_suppliers = [];
+    recalcOrderStatus(it.order_id);
+  });
   save(); toast(`Sent ${items.length} item(s) to ${s.name}`,'success');
   if (currentOrderIdForDetail) showOrderDetail(currentOrderIdForDetail);
   renderOrdersBody();
@@ -2040,18 +2078,19 @@ function renderSettingsBody() {
     if (q) users = users.filter(u => (u.username||'').toLowerCase().includes(q) || (u.name||'').toLowerCase().includes(q) || (u.role||'').toLowerCase().includes(q));
     body.innerHTML = `<div class="card" style="margin-bottom:14px"><div class="row" style="justify-content:space-between;margin-bottom:12px"><h3 style="margin:0">Users</h3><button class="ios-pill blue sm" onclick="showAddUser()">+ Add</button></div>${users.length ? `<div class="ios-table-wrap"><table class="ios-table"><thead><tr><th>#</th><th>Photo</th><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${users.map(u => { const im = u.id===currentUser.id; const av = u.photo ? `<img src="${u.photo}" style="width:32px;height:32px;border-radius:50%;object-fit:cover">` : `<div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px">${esc((u.name||u.username).charAt(0).toUpperCase())}</div>`; return `<tr><td class="muted">${u.id}</td><td>${av}</td><td class="strong">${esc(u.username)}${im?' <span class="muted small">(you)</span>':''}</td><td>${esc(u.name)}</td><td><span class="badge badge-${u.role}">${esc(u.role)}</span></td><td>${u.active ? '<span class="success">Active</span>' : '<span class="danger-c">Disabled</span>'}</td><td style="display:flex;gap:4px;flex-wrap:wrap"><button class="ios-pill sm" onclick="showEditUser(${u.id})">Edit</button><button class="ios-pill sm" onclick="showChangePassword(${u.id})">Pass</button>${!im ? `<button class="ios-pill sm" onclick="toggleUserActive(${u.id})">${u.active?'Dis':'En'}</button>` : ''}${!im ? `<button class="ios-pill red sm" onclick="deleteUser(${u.id})">Del</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<p class="muted center pad">No users</p>'}</div>`;
   } else {
-    body.innerHTML = `<div class="card" style="max-width:600px;margin-bottom:14px;border-color:rgba(48,209,88,.4)"><h3>🔥 Firebase</h3><div style="padding:12px;background:rgba(48,209,88,.08);border-radius:var(--radius-md);margin-bottom:12px"><div class="strong success" style="margin-bottom:4px">${fbConnected ? '✓ Connected' : '⚠ Offline'}</div><div class="muted small">Project: <b>${esc(firebaseConfig.projectId)}</b></div><div class="muted small">Version: <b>${POS_VERSION}</b></div></div><div class="row gap" style="flex-wrap:wrap"><button class="ios-pill green" onclick="manualSync()">🔄 Force Sync</button><button class="ios-pill" onclick="reloadFromServer()">📥 Reload</button></div></div><div class="card danger-zone-card" style="max-width:600px"><h3>🗑 DANGER ZONE</h3><p class="danger-text" style="font-size:12px;margin-bottom:14px;font-weight:600">⚠️ <b>PERMANENT</b> — Firebase + ALL devices cache</p><button class="ios-pill red" onclick="resetData()">🗑 DELETE ALL DATA + ALL CACHE</button></div>`;
+    body.innerHTML = `<div class="card" style="max-width:600px;margin-bottom:14px;border-color:rgba(48,209,88,.4)"><h3>🔥 Firebase</h3><div style="padding:12px;background:rgba(48,209,88,.08);border-radius:var(--radius-md);margin-bottom:12px"><div class="strong success" style="margin-bottom:4px">${fbConnected ? '✓ Connected' : '⚠ Offline'}</div><div class="muted small">Project: <b>${esc(firebaseConfig.projectId)}</b></div><div class="muted small">Version: <b>${POS_VERSION}</b></div></div><div class="row gap" style="flex-wrap:wrap"><button class="ios-pill green" onclick="manualSync()">🔄 Force Sync</button><button class="ios-pill" onclick="reloadFromServer()">📥 Reload</button></div></div><div class="card" style="max-width:600px;margin-bottom:14px"><h3>🛡️ Safety Backup</h3><p class="muted small" style="margin-bottom:12px">Local backup — Firebase fail වුනොත් data restore කරනවා</p><button class="ios-pill" onclick="restoreFromSafety()">♻️ Restore from safety backup</button></div><div class="card" style="max-width:600px;margin-bottom:14px"><h3>📤 Backup</h3><div class="row gap" style="flex-wrap:wrap"><button class="ios-pill" onclick="exportJSON()">⬇ Download JSON</button><button class="ios-pill" onclick="importJSON()">⬆ Import JSON</button></div></div><div class="card danger-zone-card" style="max-width:600px"><h3>🗑 DANGER ZONE</h3><p class="danger-text" style="font-size:12px;margin-bottom:14px;font-weight:600">⚠️ <b>PERMANENT</b> — Firebase + ALL devices cache</p><button class="ios-pill red" onclick="resetData()">🗑 DELETE ALL DATA + CACHE</button></div>`;
   }
 }
+function restoreFromSafety() { const b = loadSafetyBackup(); if (!isDBValid(b)) { toast('No valid backup found','error'); return; } if (!confirm('Restore from safety backup?')) return; DB = b; migrateDB(); saveToServer(true); toast('♻️ Restored from backup','success'); setTimeout(()=>location.reload(), 800); }
 async function reloadFromServer() { if (!confirm('Reload from Firebase?')) return; const r = await loadFromServer(); if (r.ok) { applyTheme(DB.settings.theme||'dark'); applyLogo(); render(); toast('Reloaded','success'); } else toast('Failed: ' + r.error, 'error'); }
 function saveSettings() { DB.settings.shop_name = document.getElementById('s-name').value.trim() || 'PHONE HUB'; DB.settings.shop_address = document.getElementById('s-addr').value.trim(); DB.settings.shop_phone = document.getElementById('s-phone').value.trim(); DB.settings.currency = document.getElementById('s-cur').value.trim() || 'LKR'; DB.settings.low_stock = Number(document.getElementById('s-low').value || 2); DB.settings.print_size = document.getElementById('s-print').value || '58mm'; save(); toast('Settings saved','success'); document.getElementById('side-shop-name').textContent = DB.settings.shop_name; }
 
 /* ═══════════════════════════════════════════════════════════
-   🗑 RESET — firebase + this device + ALL devices (via token)
+   🆕 RESET — NOW CLEARS ALL CACHES ON ALL DEVICES
    ═══════════════════════════════════════════════════════════ */
 async function resetData() {
-  const ok = await requireDangerConfirm('DELETE ALL DATA + ALL CACHES',
-    'Firebase data + THIS device cache + EVERY logged-in device cache will be cleared. All devices force-reload.',
+  const ok = await requireDangerConfirm('DELETE ALL DATA + ALL DEVICE CACHES',
+    'This will permanently erase: Firebase data, this device\'s cache, AND every logged-in device\'s cache. All devices will be force-reloaded.',
     { warnings: 3, password: true, adminRole: true });
   if (!ok) return;
 
@@ -2059,30 +2098,35 @@ async function resetData() {
   const icon = document.getElementById('sync-icon');
   if (icon) icon.classList.add('spinning');
   updateStorageStatus('saving');
-  toast('🗑 Clearing all data...', 'info', 3000);
+  toast('🗑 Clearing data...', 'info', 3000);
 
   try {
-    // 1. Generate new reset token FIRST — signals other devices
+    // 1. Fresh DB in memory
+    DB = createFreshDB();
+    migrateDB();
+
+    // 2. Push fresh (empty) DB to Firebase
+    DB._lastSaved = Date.now();
+    await fbRef.set(DB);
+
+    // 3. Generate new reset token → broadcasts to ALL devices
     const newToken = 'reset-' + Date.now() + '-' + Math.random().toString(36).slice(2,10);
     await fbResetRef.set(newToken);
 
-    // 2. Save the token locally so we don't re-wipe ourselves
-    try { localStorage.setItem(LS_RESET_TOKEN_KEY, newToken); } catch(e) {}
+    // 4. Verify Firebase is empty
+    await new Promise(r => setTimeout(r, 400));
+    const snap = await fbRef.once('value');
+    const remote = snap.val();
+    if (!isDBValid(remote)) throw new Error('Firebase write failed');
 
-    // 3. Push FRESH DB (empty) to Firebase — overwrite everything
-    DB = createFreshDB();
-    migrateDB();
-    await fbRef.set(DB);
-    cacheLocal();
-
-    // 4. Wipe THIS device's storage completely
+    // 5. WIPE this device completely
     await wipeAllCaches();
 
-    // 5. Store token again after wipe (wipe cleared it)
+    // 6. Store token so we don't reload again
     try { localStorage.setItem(LS_RESET_TOKEN_KEY, newToken); } catch(e) {}
 
-    // 6. Force reload to clean state
-    document.body.innerHTML = `<div style="position:fixed;inset:0;background:#0a0a0f;color:#fff;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:20px;z-index:99999;font-family:system-ui;text-align:center;padding:20px"><div style="font-size:64px">✅</div><h1 style="font-size:22px;margin:0">All Data Cleared</h1><p style="color:#888;max-width:340px;font-size:13px;line-height:1.6">Firebase + all device caches cleared.<br>Reloading...</p></div>`;
+    // 7. Show blank screen + reload
+    document.body.innerHTML = `<div style="position:fixed;inset:0;background:#0a0a0f;color:#fff;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:20px;z-index:99999;font-family:system-ui"><div style="font-size:64px">✅</div><h1 style="font-size:22px;margin:0">All Data Cleared</h1><p style="color:#888;max-width:340px;text-align:center;font-size:13px;line-height:1.6">Firebase + all device caches cleared. Reloading...</p></div>`;
     setTimeout(() => location.reload(), 1800);
 
   } catch(e) {
@@ -2137,7 +2181,7 @@ document.addEventListener('mousedown', (e) => {
 
 /* INIT */
 (async function init() {
-  // 🆕 Check reset token FIRST — if another device reset, wipe cache before loading
+  // 🆕 Check reset token BEFORE loading
   try {
     const snap = await fbResetRef.once('value');
     const remoteToken = snap.val();
@@ -2148,6 +2192,9 @@ document.addEventListener('mousedown', (e) => {
       try { localStorage.setItem(LS_RESET_TOKEN_KEY, remoteToken); } catch(e) {}
     }
   } catch(e) { console.warn('Reset token check failed:', e); }
+
+  const cached = loadCache();
+  if (isDBValid(cached)) { DB = cached; migrateDB(); applyTheme(DB.settings.theme || 'dark'); applyLogo(); document.getElementById('login-shop-name').textContent = DB.settings.shop_name; }
 
   const r = await loadFromServer();
   if (!r.ok) {
