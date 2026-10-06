@@ -474,7 +474,7 @@ body.sidebar-hidden .content{padding-left:54px}
       <button class="ios-btn danger" onclick="doLogout()">🚪 <span>Logout</span></button>
     </div>
     <div class="sidebar-footer">
-      <div><span class="version-chip" id="version-chip">v2.6</span></div>
+      <div><span class="version-chip" id="version-chip">v2.7</span></div>
       <div class="footer-line">
         powered by <a class="footer-link" href="https://www.lookmobile.online" target="_blank" rel="noopener">Look Mobile</a>
       </div>
@@ -507,9 +507,13 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const fbDB = firebase.database();
 const fbRef = fbDB.ref('pos_data');
+const fbResetRef = fbDB.ref('pos_reset_token'); // 🆕 Global reset broadcast
+
 const LS_KEY = 'phone_shop_pos_cache';
 const LS_SAFE_KEY = 'phone_shop_pos_safety_backup';
-const POS_VERSION = 'v2.6';
+const LS_RESET_TOKEN_KEY = 'pos_seen_reset_token'; // 🆕 Local: last-seen reset token
+const POS_VERSION = 'v2.7';
+
 const DEFAULT_SETTINGS = { shop_name:'PHONE HUB', shop_address:'123 Main Street, Colombo', shop_phone:'077-0000000', currency:'LKR', low_stock:2, theme:'dark', shop_logo: null, print_size: '58mm' };
 const ROLE_PERMS = {
   admin:['dashboard','sales','phonestock','stock','repairs','shoprepair','customers','orders','suppliers','reports','billsearch','settings'],
@@ -534,6 +538,7 @@ let fbConnected = false, fbInitDone = false, syncing = false;
 let tempOrderItems = [];
 let orderWizard = { brand:'', model:'', part:'', qty:1, note:'', step:0 };
 let currentOrderIdForDetail = null;
+let cachedBrandHistory = [], cachedModelHistory = {}, cachedPartHistory = {};
 
 function isMobile() { return window.matchMedia('(max-width: 768px)').matches; }
 function canSeeCost() { return currentUser && (currentUser.role === 'admin' || currentUser.role === 'manager'); }
@@ -544,6 +549,39 @@ function toggleSidebar() {
 function closeMobileSidebar() { if (isMobile()) document.body.classList.remove('sidebar-open-mobile'); }
 function initSidebar() { try { if (localStorage.getItem('pos_sidebar_hidden') === '1') document.body.classList.add('sidebar-hidden'); } catch(e) {} }
 initSidebar();
+
+/* ═══════════════════════════════════════════════════════════
+   🆕 CACHE MANAGEMENT — FULL WIPE
+   ═══════════════════════════════════════════════════════════ */
+async function wipeAllCaches() {
+  // 1. localStorage — full clear
+  try { localStorage.clear(); } catch(e) {}
+  // 2. sessionStorage — full clear
+  try { sessionStorage.clear(); } catch(e) {}
+  // 3. IndexedDB — delete all databases
+  try {
+    if (indexedDB && indexedDB.databases) {
+      const dbs = await indexedDB.databases();
+      for (const db of dbs) {
+        if (db.name) { try { indexedDB.deleteDatabase(db.name); } catch(e) {} }
+      }
+    }
+  } catch(e) {}
+  // 4. Service Workers — unregister all
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      for (const reg of regs) { try { await reg.unregister(); } catch(e) {} }
+    }
+  } catch(e) {}
+  // 5. CacheStorage — delete all caches
+  try {
+    if ('caches' in window) {
+      const keys = await caches.keys();
+      for (const k of keys) { try { await caches.delete(k); } catch(e) {} }
+    }
+  } catch(e) {}
+}
 
 function saveSafetyBackup() { try { if (!DB || !DB.users || !DB.users.length) return; localStorage.setItem(LS_SAFE_KEY, JSON.stringify({ data: DB, ts: Date.now(), version: POS_VERSION })); } catch(e) {} }
 function loadSafetyBackup() { try { const r = localStorage.getItem(LS_SAFE_KEY); if (!r) return null; const p = JSON.parse(r); if (p && p.data && p.data.products && p.data.users && p.data.users.length) return p.data; } catch(e) {} return null; }
@@ -567,23 +605,32 @@ async function manualSync() {
   } catch (e) { updateStorageStatus('disconnected'); toast('❌ Sync failed', 'error', 4000); }
   finally { syncing = false; if (icon) icon.classList.remove('spinning'); }
 }
+
 async function loadFromServer() {
   try {
-    const c = loadCache(); if (isDBValid(c)) { DB = c; migrateDB(); }
-    const snap = await fbRef.once('value'); const data = snap.val();
+    const c = loadCache();
+    if (isDBValid(c)) { DB = c; migrateDB(); }
+
+    const snap = await fbRef.once('value');
+    const data = snap.val();
+
     if (isDBValid(data)) { DB = data; migrateDB(); cacheLocal(); saveSafetyBackup(); fbConnected = true; updateStorageStatus('connected'); return { ok: true, hasData: true }; }
     if (isDBValid(DB)) { await saveToServer(true); fbConnected = true; updateStorageStatus('connected'); return { ok: true, hasData: true, pushed: true }; }
+
     const b = loadSafetyBackup();
     if (isDBValid(b)) { DB = b; migrateDB(); cacheLocal(); await saveToServer(true); fbConnected = true; updateStorageStatus('connected'); toast('♻️ Restored from backup', 'success', 3000); return { ok: true, hasData: true, restored: true }; }
+
     DB = createFreshDB(); migrateDB(); cacheLocal(); await saveToServer(true);
     fbConnected = true; updateStorageStatus('connected'); return { ok: true, hasData: false };
   } catch (e) {
     fbConnected = false; updateStorageStatus('disconnected');
     if (isDBValid(DB)) return { ok: true, hasData: true, offline: true };
-    const b = loadSafetyBackup(); if (isDBValid(b)) { DB = b; migrateDB(); return { ok: true, hasData: true, offline: true, restored: true }; }
+    const b = loadSafetyBackup();
+    if (isDBValid(b)) { DB = b; migrateDB(); return { ok: true, hasData: true, offline: true, restored: true }; }
     return { ok: false, error: e.message };
   }
 }
+
 async function saveToServer(immediate = false) {
   if (!DB || !isDBValid(DB)) return;
   cacheLocal(); saveSafetyBackup();
@@ -591,6 +638,7 @@ async function saveToServer(immediate = false) {
   try { updateStorageStatus('saving'); DB._lastSaved = Date.now(); await fbRef.set(DB); fbConnected = true; updateStorageStatus('connected'); }
   catch (e) { fbConnected = false; updateStorageStatus('disconnected'); }
 }
+
 function updateStorageStatus(state) {
   const dot = document.getElementById('storage-dot'), label = document.getElementById('storage-label');
   const badge = document.getElementById('firebase-badge'), bt = document.getElementById('fb-badge-text');
@@ -605,8 +653,33 @@ function updateStorageStatus(state) {
     else { badge.classList.add('offline'); bt.textContent = '⚠ Offline'; }
   }
 }
+
 function cacheLocal() { try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); } catch(e) {} }
 function loadCache() { try { const r = localStorage.getItem(LS_KEY); if (r) return JSON.parse(r); } catch(e) {} return null; }
+
+/* ═══════════════════════════════════════════════════════════
+   🆕 RESET TOKEN BROADCAST — clears cache on all devices
+   ═══════════════════════════════════════════════════════════ */
+function startResetListener() {
+  fbResetRef.on('value', async (snap) => {
+    const remoteToken = snap.val();
+    if (!remoteToken) return;
+    let localToken = '';
+    try { localToken = localStorage.getItem(LS_RESET_TOKEN_KEY) || ''; } catch(e) {}
+    // If token matches — nothing to do
+    if (localToken === remoteToken) return;
+    // 🆕 Token changed — someone reset data → WIPE this device's cache
+    console.log('🚨 Reset token changed — wiping local cache');
+    syncing = true;
+    try { await wipeAllCaches(); } catch(e) {}
+    // Small delay so user sees a message
+    if (currentUser) {
+      document.body.innerHTML = `<div style="position:fixed;inset:0;background:#0a0a0f;color:#fff;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:20px;z-index:99999;font-family:system-ui"><div style="font-size:64px">🗑️</div><h1 style="font-size:22px;margin:0">Data Was Reset</h1><p style="color:#888;max-width:340px;text-align:center;font-size:13px;line-height:1.6">This device's cache has been cleared by another device. Reloading...</p></div>`;
+    }
+    setTimeout(() => location.reload(), 2000);
+  });
+}
+
 function startRealtimeSync() {
   fbDB.ref('.info/connected').on('value', (s) => { fbConnected = s.val() === true; if (!syncing) updateStorageStatus(fbConnected ? 'connected' : 'disconnected'); });
   fbRef.on('value', (snap) => {
@@ -620,6 +693,7 @@ function startRealtimeSync() {
     try { updateUserBox(); buildNav(); buildMobileTabs(); render(); updateStorageStatus('connected'); toast('Synced from another device', 'info', 1800); } catch(e) {}
   });
 }
+
 function createFreshDB() {
   const d = { products:[], stock_units:[], accessories:[], customers:[], sales:[], sale_items:[], repairs:[], credit_payments:[], returns:[], stock_adjustments:[], shops:[], shop_repairs:[], shop_payments:[], suppliers:[], orders:[], order_items:[], users:[], settings:{...DEFAULT_SETTINGS}, ids:{products:1,stock_units:1,accessories:1,customers:1,sales:1,sale_items:1,repairs:1,credit_payments:1,returns:1,stock_adjustments:1,shops:1,shop_repairs:1,shop_payments:1,suppliers:1,orders:1,order_items:1,users:1} };
   initUsers(d); return d;
@@ -627,6 +701,7 @@ function createFreshDB() {
 function initUsers(d) { d.users = [{id:1,username:'admin',password:hashPassword('admin123'),name:'Administrator',role:'admin',active:true,photo:null,created_at:now()},{id:2,username:'cashier',password:hashPassword('cashier123'),name:'Cashier',role:'cashier',active:true,photo:null,created_at:now()}]; d.ids.users = 3; }
 function makeProductCode(id){ return 'PHN-' + String(id).padStart(4,'0'); }
 function makeAccessoryCode(id){ return 'ACC-' + String(id).padStart(4,'0'); }
+
 function migrateDB() {
   if (!DB.settings) DB.settings = {...DEFAULT_SETTINGS};
   if (DB.settings.shop_logo === undefined) DB.settings.shop_logo = null;
@@ -654,6 +729,8 @@ function migrateDB() {
     if (it.part === undefined) it.part = '';
     if (it.note === undefined) it.note = '';
   });
+  // Rebuild autocomplete history cache
+  rebuildOrderHistory();
 }
 function save() { saveToServer(false); }
 function nextId(key) { return DB.ids[key]++; }
@@ -667,6 +744,32 @@ function getAllCategories() { const set = new Set(ACC_CATEGORIES); DB.accessorie
 function getSaleReturnTotal(saleId) { return DB.returns.filter(r => r.sale_id === saleId).reduce((a,r)=>a+r.refund_amount, 0); }
 function calcShopOutstanding(s) { const reps = DB.shop_repairs.filter(r => r.shop_id === s.id); const t = reps.reduce((b,r)=>b+(Number(r.cost)||0),0); const rc = reps.reduce((b,r)=>b+(Number(r.received)||0),0); const pmts = (DB.shop_payments||[]).filter(p=>p.shop_id === s.id).reduce((b,p)=>b+(Number(p.amount)||0),0); return Math.max(0, t - rc - pmts); }
 function calcShopStats(s) { const reps = DB.shop_repairs.filter(r => r.shop_id === s.id); const payments = (DB.shop_payments||[]).filter(p=>p.shop_id === s.id); const billed = reps.reduce((b,r)=>b+(Number(r.cost)||0),0); const fromRepairs = reps.reduce((b,r)=>b+(Number(r.received)||0),0); const fromPayments = payments.reduce((b,p)=>b+(Number(p.amount)||0),0); const received = fromRepairs + fromPayments; return { reps, payments, billed, received, fromRepairs, fromPayments, outstanding: Math.max(0, billed - received) }; }
+
+/* 🆕 ORDER HISTORY AUTOCOMPLETE CACHE */
+function rebuildOrderHistory() {
+  const brands = new Set();
+  const modelsByBrand = {};
+  const partsByBrandModel = {};
+  DB.order_items.forEach(it => {
+    const b = (it.brand||'').trim();
+    const m = (it.model||'').trim();
+    const p = (it.part||'').trim();
+    if (b) brands.add(b);
+    if (b && m) { if (!modelsByBrand[b]) modelsByBrand[b] = new Set(); modelsByBrand[b].add(m); }
+    if (b && m && p) { const key = b + '|' + m; if (!partsByBrandModel[key]) partsByBrandModel[key] = new Set(); partsByBrandModel[key].add(p); }
+  });
+  // Also add from products
+  DB.products.forEach(prod => {
+    const b = (prod.brand||'').trim(); const m = (prod.model||'').trim();
+    if (b) brands.add(b);
+    if (b && m) { if (!modelsByBrand[b]) modelsByBrand[b] = new Set(); modelsByBrand[b].add(m); }
+  });
+  cachedBrandHistory = [...brands].sort();
+  cachedModelHistory = {};
+  Object.keys(modelsByBrand).forEach(k => { cachedModelHistory[k] = [...modelsByBrand[k]].sort(); });
+  cachedPartHistory = {};
+  Object.keys(partsByBrandModel).forEach(k => { cachedPartHistory[k] = [...partsByBrandModel[k]].sort(); });
+}
 
 function applyLogo() { const logo = DB?.settings?.shop_logo; const sw = document.getElementById('sidebar-logo-wrap'); const lw = document.getElementById('login-logo-wrap'); const h = logo ? `<img src="${logo}" class="brand-logo" alt="">` : `<div class="brand-icon">📱</div>`; if (sw) sw.innerHTML = h; if (lw) lw.innerHTML = h; }
 function handleLogoUpload(file) { if (!file || !file.type.startsWith('image/') || file.size > 500*1024) { toast('Invalid image (max 500KB)', 'error'); return; } const r = new FileReader(); r.onload = e => { DB.settings.shop_logo = e.target.result; save(); applyLogo(); toast('Logo updated', 'success'); if (settingsTab === 'shop') renderSettingsBody(); }; r.readAsDataURL(file); }
@@ -850,19 +953,12 @@ function navigateTo(view) { if (!can(view)) { toast('Access denied','error'); re
 function searchBar(id, placeholder, oninput='') { return `<div class="ios-search"><input id="${id}" placeholder="${placeholder}" oninput="${oninput}" autocomplete="off"><button class="clear" onclick="clearSearch('${id}','${oninput}')">✕</button></div>`; }
 function clearSearch(id, oninput) { const el = document.getElementById(id); if (!el) return; el.value = ''; el.focus(); if (!oninput) return; const m = oninput.match(/^(\w+)\s*\(/); if (m && typeof window[m[1]] === 'function') window[m[1]](''); }
 
-/* 🆕 GLOBAL ENTER HANDLER — enter key moves to next field in modal forms */
 document.addEventListener('keydown', e => {
   if (e.key !== 'Enter' || e.shiftKey) return;
   const tag = (e.target.tagName||'').toLowerCase();
   if (tag === 'textarea') return;
-
-  // Order wizard special handling — advance step
   if (e.target.id === 'ow-input') { e.preventDefault(); orderWizardNext(); return; }
-
-  // Login password — submit
   if (e.target.id === 'login-pass') { e.preventDefault(); doLogin(); return; }
-
-  // Modal form — advance to next field, or submit on last
   const modalRoot = document.getElementById('modal-root');
   const modalOpen = modalRoot && modalRoot.children.length > 0;
   if (modalOpen) {
@@ -870,7 +966,7 @@ document.addEventListener('keydown', e => {
     if (modalBody && modalBody.contains(e.target)) {
       const allFields = [...modalBody.querySelectorAll('input:not([type=hidden]):not([disabled]), select:not([disabled])')].filter(el => el.offsetParent !== null);
       const idx = allFields.indexOf(e.target);
-      if (idx < 0) return; // Not a field — ignore
+      if (idx < 0) return;
       e.preventDefault();
       if (idx < allFields.length - 1) {
         const next = allFields[idx + 1];
@@ -884,8 +980,6 @@ document.addEventListener('keydown', e => {
     }
     return;
   }
-
-  // Sales page — complete sale on Enter (except search input)
   if (currentView === 'sales' && tag === 'input' && e.target.id !== 'sales-search-input') {
     e.preventDefault();
     completeSale();
@@ -1139,7 +1233,6 @@ function updateTotal() {
   const el = document.getElementById('total'); if (el) el.textContent = fmt(total);
   updateCreditPreview(); updateChangeDisplay();
 }
-
 function completeSale() {
   if (!cart.length){ toast('Cart is empty','error'); return; }
   const disc = Number(document.getElementById('discount').value||0);
@@ -1181,10 +1274,8 @@ function completeSale() {
     }, '✅ Complete Credit Sale');
     return;
   }
-
   finalizeSale({ disc, paidFinal, total, change, balance: 0, method, custInfo: { name: preName, phone: prePhone, idnum: document.getElementById('cust-idnum')?.value.trim() || '', address: document.getElementById('cust-address')?.value.trim() || '' } });
 }
-
 function finalizeSale({ disc, paidFinal, total, change, balance, method, custInfo }) {
   const cname = custInfo.name, cphone = custInfo.phone, cidnum = custInfo.idnum, caddress = custInfo.address;
   let cust_id = null;
@@ -1210,7 +1301,6 @@ function finalizeSale({ disc, paidFinal, total, change, balance, method, custInf
   save();
   const saleIdToShow = sale.id;
   clearCart();
-  // 🆕 Defer showing sale-complete modal until any open modal finishes closing
   setTimeout(() => showSaleCompleteModal(saleIdToShow), 30);
 }
 function showSaleCompleteModal(saleId) {
@@ -1358,10 +1448,10 @@ function renderPhoneStockBody() {
 }
 function findDuplicateProducts() { const map = new Map(); DB.products.forEach(p => { const k = `${(p.brand||'').toLowerCase().trim()}|${(p.model||'').toLowerCase().trim()}|${(p.storage||'').toLowerCase().trim()}|${(p.color||'').toLowerCase().trim()}`; if (!map.has(k)) map.set(k, []); map.get(k).push(p); }); const g = []; map.forEach(a => { if (a.length > 1) g.push(a); }); return g; }
 function mergeDuplicateProducts() { if (!(currentUser.role==='admin'||currentUser.role==='manager')){ toast('Access denied','error'); return; } const g = findDuplicateProducts(); if (!g.length) { toast('No duplicates','info'); return; } if (!confirm(`Merge ${g.length} group(s)?`)) return; let m = 0; g.forEach(a => { const s = [...a].sort((a,b)=>a.id-b.id); const k = s[0]; s.slice(1).forEach(d => { DB.stock_units.forEach(u => { if (u.product_id === d.id) u.product_id = k.id; }); DB.products = DB.products.filter(p => p.id !== d.id); m++; }); }); save(); toast(`Merged ${m}`,'success'); renderPhoneStock(document.getElementById('content')); }
-function showAddProduct() { if (!(currentUser.role==='admin'||currentUser.role==='manager')){ toast('Access denied','error'); return; } const pc = makeProductCode(DB.ids.products); openModal('Add Phone Product', `<div class="form-grid"><div class="field-hint">🔖 Code: <b class="primary-c">${esc(pc)}</b></div>${field('Brand', '<input id="np-brand" class="ios-input" placeholder="SAMSUNG" autofocus>', true)}${field('Model', '<input id="np-model" class="ios-input" placeholder="A065">', true)}${field('Storage', '<input id="np-storage" class="ios-input" placeholder="64">')}${field('Color', '<input id="np-color" class="ios-input" placeholder="BLACK">')}<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${field('Cost', '<input id="np-cost" class="ios-input" type="number" step="0.01" placeholder="0">')}${field('Sale', '<input id="np-price" class="ios-input" type="number" step="0.01" placeholder="0">')}</div>${field('Low stock alert', '<input id="np-low" class="ios-input" type="number" value="2">')}</div>`, () => { const brand = document.getElementById('np-brand').value.trim(); const model = document.getElementById('np-model').value.trim(); const storage = document.getElementById('np-storage').value.trim(); const color = document.getElementById('np-color').value.trim(); if (!model){ toast('Model required','error'); return false; } const dup = DB.products.find(p => (p.brand||'').toLowerCase() === brand.toLowerCase() && (p.model||'').toLowerCase() === model.toLowerCase() && (p.storage||'').toLowerCase() === storage.toLowerCase() && (p.color||'').toLowerCase() === color.toLowerCase()); if (dup) { toast(`Product ${dup.code} exists`,'error',4000); return false; } const nid = nextId('products'); DB.products.push({ id:nid, code:makeProductCode(nid), brand, model, storage, color, cost_price:Number(document.getElementById('np-cost').value||0), sale_price:Number(document.getElementById('np-price').value||0), low_stock_threshold:Number(document.getElementById('np-low').value||2), created_at:now() }); save(); toast(`Added — ${makeProductCode(nid)}`,'success'); renderPhoneStockBody(); }); }
-function showEditProduct(id) { if (!(currentUser.role==='admin'||currentUser.role==='manager')){ toast('Access denied','error'); return; } const p = DB.products.find(x=>x.id===id); if (!p) return; openModal(`Edit — ${p.code}`, `<div class="form-grid">${field('Brand', `<input id="ep-brand" class="ios-input" value="${esc(p.brand||'')}">`)}${field('Model', `<input id="ep-model" class="ios-input" value="${esc(p.model||'')}">`, true)}${field('Storage', `<input id="ep-storage" class="ios-input" value="${esc(p.storage||'')}">`)}${field('Color', `<input id="ep-color" class="ios-input" value="${esc(p.color||'')}">`)}<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${field('Cost', `<input id="ep-cost" class="ios-input" type="number" step="0.01" value="${p.cost_price||0}">`)}${field('Sale', `<input id="ep-price" class="ios-input" type="number" step="0.01" value="${p.sale_price||0}">`)}</div>${field('Low stock', `<input id="ep-low" class="ios-input" type="number" value="${p.low_stock_threshold||2}">`)}</div>`, () => { p.brand = document.getElementById('ep-brand').value.trim(); p.model = document.getElementById('ep-model').value.trim(); p.storage = document.getElementById('ep-storage').value.trim(); p.color = document.getElementById('ep-color').value.trim(); p.cost_price = Number(document.getElementById('ep-cost').value||0); p.sale_price = Number(document.getElementById('ep-price').value||0); p.low_stock_threshold = Number(document.getElementById('ep-low').value||2); save(); toast('Updated','success'); renderPhoneStockBody(); }); }
+function showAddProduct() { if (!(currentUser.role==='admin'||currentUser.role==='manager')){ toast('Access denied','error'); return; } const pc = makeProductCode(DB.ids.products); openModal('Add Phone Product', `<div class="form-grid"><div class="field-hint">🔖 Code: <b class="primary-c">${esc(pc)}</b></div>${field('Brand', '<input id="np-brand" class="ios-input" placeholder="SAMSUNG" autofocus>', true)}${field('Model', '<input id="np-model" class="ios-input" placeholder="A065">', true)}${field('Storage', '<input id="np-storage" class="ios-input" placeholder="64">')}${field('Color', '<input id="np-color" class="ios-input" placeholder="BLACK">')}<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${field('Cost', '<input id="np-cost" class="ios-input" type="number" step="0.01" placeholder="0">')}${field('Sale', '<input id="np-price" class="ios-input" type="number" step="0.01" placeholder="0">')}</div>${field('Low stock alert', '<input id="np-low" class="ios-input" type="number" value="2">')}</div>`, () => { const brand = document.getElementById('np-brand').value.trim(); const model = document.getElementById('np-model').value.trim(); const storage = document.getElementById('np-storage').value.trim(); const color = document.getElementById('np-color').value.trim(); if (!model){ toast('Model required','error'); return false; } const dup = DB.products.find(p => (p.brand||'').toLowerCase() === brand.toLowerCase() && (p.model||'').toLowerCase() === model.toLowerCase() && (p.storage||'').toLowerCase() === storage.toLowerCase() && (p.color||'').toLowerCase() === color.toLowerCase()); if (dup) { toast(`Product ${dup.code} exists`,'error',4000); return false; } const nid = nextId('products'); DB.products.push({ id:nid, code:makeProductCode(nid), brand, model, storage, color, cost_price:Number(document.getElementById('np-cost').value||0), sale_price:Number(document.getElementById('np-price').value||0), low_stock_threshold:Number(document.getElementById('np-low').value||2), created_at:now() }); save(); rebuildOrderHistory(); toast(`Added — ${makeProductCode(nid)}`,'success'); renderPhoneStockBody(); }); }
+function showEditProduct(id) { if (!(currentUser.role==='admin'||currentUser.role==='manager')){ toast('Access denied','error'); return; } const p = DB.products.find(x=>x.id===id); if (!p) return; openModal(`Edit — ${p.code}`, `<div class="form-grid">${field('Brand', `<input id="ep-brand" class="ios-input" value="${esc(p.brand||'')}">`)}${field('Model', `<input id="ep-model" class="ios-input" value="${esc(p.model||'')}">`, true)}${field('Storage', `<input id="ep-storage" class="ios-input" value="${esc(p.storage||'')}">`)}${field('Color', `<input id="ep-color" class="ios-input" value="${esc(p.color||'')}">`)}<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${field('Cost', `<input id="ep-cost" class="ios-input" type="number" step="0.01" value="${p.cost_price||0}">`)}${field('Sale', `<input id="ep-price" class="ios-input" type="number" step="0.01" value="${p.sale_price||0}">`)}</div>${field('Low stock', `<input id="ep-low" class="ios-input" type="number" value="${p.low_stock_threshold||2}">`)}</div>`, () => { p.brand = document.getElementById('ep-brand').value.trim(); p.model = document.getElementById('ep-model').value.trim(); p.storage = document.getElementById('ep-storage').value.trim(); p.color = document.getElementById('ep-color').value.trim(); p.cost_price = Number(document.getElementById('ep-cost').value||0); p.sale_price = Number(document.getElementById('ep-price').value||0); p.low_stock_threshold = Number(document.getElementById('ep-low').value||2); save(); rebuildOrderHistory(); toast('Updated','success'); renderPhoneStockBody(); }); }
 function showAddUnit() { if (!(currentUser.role==='admin'||currentUser.role==='manager')){ toast('Access denied','error'); return; } if (!DB.products.length){ toast('Add product first','warn'); return; } const opts = DB.products.map(p => `<option value="${p.id}">${esc(p.code)} · ${esc(p.brand)} ${esc(p.model)} ${esc(p.storage||'')}</option>`).join(''); openModal('Add Stock Unit', `<div class="form-grid">${field('Product', `<select id="nu-product" class="ios-input">${opts}</select>`, true)}${field('IMEI', '<input id="nu-imei" class="ios-input" placeholder="15-digit IMEI">')}${field('Barcode', '<input id="nu-barcode" class="ios-input" placeholder="Scan or type barcode" autofocus>', false, '🏷️ Optional')}${field('Condition', '<select id="nu-cond" class="ios-input"><option value="new">New</option><option value="used">Used</option></select>')}${field('Warranty (months)', '<input id="nu-warranty" class="ios-input" type="number" value="12" min="0">')}${field('Sale price (optional)', '<input id="nu-price" class="ios-input" type="number" step="0.01" placeholder="Default">')}</div>`, () => { const pid = Number(document.getElementById('nu-product').value); const p = DB.products.find(x=>x.id===pid); if (!p) return false; const imei = document.getElementById('nu-imei').value.trim(); const barcode = document.getElementById('nu-barcode').value.trim(); if (imei && DB.stock_units.find(u=>u.imei===imei)){ toast('IMEI exists','error'); return false; } if (barcode && DB.stock_units.find(u=>u.barcode===barcode)){ toast('Barcode exists','error'); return false; } DB.stock_units.push({ id:nextId('stock_units'), product_id:pid, imei:imei||null, barcode:barcode||'', condition:document.getElementById('nu-cond').value, status:'in_stock', cost_price:p.cost_price||0, sale_price:Number(document.getElementById('nu-price').value||p.sale_price||0), warranty_months:Number(document.getElementById('nu-warranty').value||0), added_at:now(), sold_at:null }); save(); toast('Unit added','success'); renderPhoneStockBody(); }); }
-async function deleteProduct(id) { if (!(currentUser.role==='admin'||currentUser.role==='manager')){ toast('Access denied','error'); return; } const p = DB.products.find(x=>x.id===id); if (!p) return; const u = DB.stock_units.filter(x=>x.product_id===id); const ok = await requireDangerConfirm(`DELETE ${p.code}`, u.length ? `${u.length} units linked.` : 'No units.', { warnings: u.length ? 2 : 1, password: u.length > 0 }); if (!ok) return; DB.products = DB.products.filter(x => x.id !== id); if (u.length) DB.stock_units = DB.stock_units.filter(x => x.product_id !== id); save(); toast('Deleted','success'); renderPhoneStockBody(); }
+async function deleteProduct(id) { if (!(currentUser.role==='admin'||currentUser.role==='manager')){ toast('Access denied','error'); return; } const p = DB.products.find(x=>x.id===id); if (!p) return; const u = DB.stock_units.filter(x=>x.product_id===id); const ok = await requireDangerConfirm(`DELETE ${p.code}`, u.length ? `${u.length} units linked.` : 'No units.', { warnings: u.length ? 2 : 1, password: u.length > 0 }); if (!ok) return; DB.products = DB.products.filter(x => x.id !== id); if (u.length) DB.stock_units = DB.stock_units.filter(x => x.product_id !== id); save(); rebuildOrderHistory(); toast('Deleted','success'); renderPhoneStockBody(); }
 async function deleteStockUnit(id) { if (!(currentUser.role==='admin'||currentUser.role==='manager')){ toast('Access denied','error'); return; } const u = DB.stock_units.find(x=>x.id===id); if (!u) return; const ok = await requireDangerConfirm('DELETE unit', `IMEI: ${u.imei||'-'}`, { warnings: 1, password: false }); if (!ok) return; DB.stock_units = DB.stock_units.filter(x => x.id !== id); save(); toast('Deleted','success'); renderPhoneStockBody(); }
 
 /* STOCK */
@@ -1565,13 +1655,14 @@ function recalcOrderStatus(orderId) {
 }
 
 /* ORDER CART WIZARD */
-function getBrandHistory() { const s = new Set(); DB.order_items.forEach(it => { if (it.brand) s.add(it.brand); }); return [...s].sort(); }
-function getModelHistory(brand) { const s = new Set(); DB.order_items.forEach(it => { if (it.model && (!brand || it.brand === brand)) s.add(it.model); }); return [...s].sort(); }
-function getPartHistory(brand, model) { const s = new Set(); DB.order_items.forEach(it => { if (it.part && (!brand || it.brand === brand) && (!model || it.model === model)) s.add(it.part); }); return [...s].sort(); }
+function getBrandHistory() { return cachedBrandHistory.slice(); }
+function getModelHistory(brand) { return (cachedModelHistory[brand] || []).slice(); }
+function getPartHistory(brand, model) { return (cachedPartHistory[brand + '|' + model] || []).slice(); }
 
 function showOrderCartModal() {
   tempOrderItems = [];
   orderWizard = { brand:'', model:'', part:'', qty:1, note:'', step:0 };
+  rebuildOrderHistory();
   const root = document.getElementById('modal-root');
   root.innerHTML = `<div class="modal-bg" onclick="if(event.target===this) closeModal()"><div class="modal" style="max-width:720px">
     <h2>🛒 Add Order to Cart</h2>
@@ -1612,7 +1703,6 @@ function renderOrderWizard() {
   else if (step === 3) { inputHTML = `<input id="ow-input" class="ios-input" type="number" value="${orderWizard.qty}" min="1" placeholder="1">`; }
   else if (step === 4) { inputHTML = `<input id="ow-input" class="ios-input" value="${esc(orderWizard.note)}" placeholder="Optional note (color, version, etc.)">`; }
   el.innerHTML = `<div class="ow-steps">${indicator}</div><div class="ow-input-wrap">${inputHTML}<datalist id="ow-list">${history.map(h => `<option value="${esc(h)}">`).join('')}</datalist></div><div class="ow-hint">⌨️ <b>Enter</b> → ${step === 4 ? 'item එක cart එකට add වෙනවා' : 'next step'}</div><div class="ow-actions" style="margin-top:10px">${step > 0 ? `<button class="ios-pill ghost sm" onclick="orderWizardBack()">← Back</button>` : ''}<button class="ios-pill ${step === 4 ? 'green' : 'blue'} sm" onclick="orderWizardNext()">${step === 4 ? '✓ Add Item' : 'Next →'}</button></div>`;
-  // Only focus — Enter handled globally
   setTimeout(() => { const inp = document.getElementById('ow-input'); if (inp) { inp.focus(); if (step === 3 || step === 4) { try { inp.select(); } catch(_) {} } } }, 30);
 }
 function orderWizardSetStep(i) { if (i <= orderWizard.step) { orderWizard.step = i; renderOrderWizard(); } }
@@ -1650,7 +1740,7 @@ function saveOrderFromCart() {
   DB.orders.push({ id: oid, order_no: ono, customer_name: name, customer_phone: document.getElementById('co-phone')?.value.trim() || '', status: 'new', notes: document.getElementById('co-notes')?.value.trim() || '', created_at: now(), sent_at: null, received_at: null, delivered_at: null, created_by: currentUser?.id||null });
   tempOrderItems.forEach(it => DB.order_items.push({ id: nextId('order_items'), order_id: oid, brand: it.brand, model: it.model, part: it.part, description: it.description, qty: it.qty, note: it.note, cost_price: 0, sale_price: 0, supplier_id: null, status: 'pending', received_qty: 0, tried_suppliers: [], created_at: now() }));
   tempOrderItems = [];
-  save(); toast(`✓ Order ${ono} created`,'success'); closeModal(); renderOrdersBody();
+  save(); rebuildOrderHistory(); toast(`✓ Order ${ono} created`,'success'); closeModal(); renderOrdersBody();
 }
 
 function renderOrdersBody() {
@@ -1801,7 +1891,6 @@ function requestSelectedFromDetail() {
     </div>`;
   openModal('📤 Choose Supplier', html, () => {}, 'Cancel');
 }
-/* 🆕 NEW WhatsApp order message format */
 function sendOrderItemsToSupplier(itemIds, supplierId) {
   const s = DB.suppliers.find(x=>x.id===supplierId);
   if (!s || !s.phone) { toast('Supplier has no phone','error'); return; }
@@ -1866,7 +1955,7 @@ async function deleteOrder(id) {
   if (!ok) return;
   DB.orders = DB.orders.filter(x=>x.id!==id);
   DB.order_items = DB.order_items.filter(it=>it.order_id!==id);
-  save(); toast('Deleted','success'); renderOrdersBody();
+  save(); rebuildOrderHistory(); toast('Deleted','success'); renderOrdersBody();
 }
 
 /* SUPPLIERS */
@@ -1989,13 +2078,65 @@ function renderSettingsBody() {
     if (q) users = users.filter(u => (u.username||'').toLowerCase().includes(q) || (u.name||'').toLowerCase().includes(q) || (u.role||'').toLowerCase().includes(q));
     body.innerHTML = `<div class="card" style="margin-bottom:14px"><div class="row" style="justify-content:space-between;margin-bottom:12px"><h3 style="margin:0">Users</h3><button class="ios-pill blue sm" onclick="showAddUser()">+ Add</button></div>${users.length ? `<div class="ios-table-wrap"><table class="ios-table"><thead><tr><th>#</th><th>Photo</th><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${users.map(u => { const im = u.id===currentUser.id; const av = u.photo ? `<img src="${u.photo}" style="width:32px;height:32px;border-radius:50%;object-fit:cover">` : `<div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px">${esc((u.name||u.username).charAt(0).toUpperCase())}</div>`; return `<tr><td class="muted">${u.id}</td><td>${av}</td><td class="strong">${esc(u.username)}${im?' <span class="muted small">(you)</span>':''}</td><td>${esc(u.name)}</td><td><span class="badge badge-${u.role}">${esc(u.role)}</span></td><td>${u.active ? '<span class="success">Active</span>' : '<span class="danger-c">Disabled</span>'}</td><td style="display:flex;gap:4px;flex-wrap:wrap"><button class="ios-pill sm" onclick="showEditUser(${u.id})">Edit</button><button class="ios-pill sm" onclick="showChangePassword(${u.id})">Pass</button>${!im ? `<button class="ios-pill sm" onclick="toggleUserActive(${u.id})">${u.active?'Dis':'En'}</button>` : ''}${!im ? `<button class="ios-pill red sm" onclick="deleteUser(${u.id})">Del</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<p class="muted center pad">No users</p>'}</div>`;
   } else {
-    body.innerHTML = `<div class="card" style="max-width:600px;margin-bottom:14px;border-color:rgba(48,209,88,.4)"><h3>🔥 Firebase</h3><div style="padding:12px;background:rgba(48,209,88,.08);border-radius:var(--radius-md);margin-bottom:12px"><div class="strong success" style="margin-bottom:4px">${fbConnected ? '✓ Connected' : '⚠ Offline'}</div><div class="muted small">Project: <b>${esc(firebaseConfig.projectId)}</b></div><div class="muted small">Version: <b>${POS_VERSION}</b></div></div><div class="row gap" style="flex-wrap:wrap"><button class="ios-pill green" onclick="manualSync()">🔄 Force Sync</button><button class="ios-pill" onclick="reloadFromServer()">📥 Reload</button></div></div><div class="card" style="max-width:600px;margin-bottom:14px"><h3>🛡️ Safety Backup</h3><p class="muted small" style="margin-bottom:12px">Local backup — Firebase fail වුනොත් data restore කරනවා</p><button class="ios-pill" onclick="restoreFromSafety()">♻️ Restore from safety backup</button></div><div class="card" style="max-width:600px;margin-bottom:14px"><h3>📤 Backup</h3><div class="row gap" style="flex-wrap:wrap"><button class="ios-pill" onclick="exportJSON()">⬇ Download JSON</button><button class="ios-pill" onclick="importJSON()">⬆ Import JSON</button></div></div><div class="card danger-zone-card" style="max-width:600px"><h3>🗑 DANGER ZONE</h3><p class="danger-text" style="font-size:12px;margin-bottom:14px;font-weight:600">⚠️ <b>PERMANENT</b></p><button class="ios-pill red" onclick="resetData()">🗑 DELETE ALL DATA</button></div>`;
+    body.innerHTML = `<div class="card" style="max-width:600px;margin-bottom:14px;border-color:rgba(48,209,88,.4)"><h3>🔥 Firebase</h3><div style="padding:12px;background:rgba(48,209,88,.08);border-radius:var(--radius-md);margin-bottom:12px"><div class="strong success" style="margin-bottom:4px">${fbConnected ? '✓ Connected' : '⚠ Offline'}</div><div class="muted small">Project: <b>${esc(firebaseConfig.projectId)}</b></div><div class="muted small">Version: <b>${POS_VERSION}</b></div></div><div class="row gap" style="flex-wrap:wrap"><button class="ios-pill green" onclick="manualSync()">🔄 Force Sync</button><button class="ios-pill" onclick="reloadFromServer()">📥 Reload</button></div></div><div class="card" style="max-width:600px;margin-bottom:14px"><h3>🛡️ Safety Backup</h3><p class="muted small" style="margin-bottom:12px">Local backup — Firebase fail වුනොත් data restore කරනවා</p><button class="ios-pill" onclick="restoreFromSafety()">♻️ Restore from safety backup</button></div><div class="card" style="max-width:600px;margin-bottom:14px"><h3>📤 Backup</h3><div class="row gap" style="flex-wrap:wrap"><button class="ios-pill" onclick="exportJSON()">⬇ Download JSON</button><button class="ios-pill" onclick="importJSON()">⬆ Import JSON</button></div></div><div class="card danger-zone-card" style="max-width:600px"><h3>🗑 DANGER ZONE</h3><p class="danger-text" style="font-size:12px;margin-bottom:14px;font-weight:600">⚠️ <b>PERMANENT</b> — Firebase + ALL devices cache</p><button class="ios-pill red" onclick="resetData()">🗑 DELETE ALL DATA + CACHE</button></div>`;
   }
 }
 function restoreFromSafety() { const b = loadSafetyBackup(); if (!isDBValid(b)) { toast('No valid backup found','error'); return; } if (!confirm('Restore from safety backup?')) return; DB = b; migrateDB(); saveToServer(true); toast('♻️ Restored from backup','success'); setTimeout(()=>location.reload(), 800); }
 async function reloadFromServer() { if (!confirm('Reload from Firebase?')) return; const r = await loadFromServer(); if (r.ok) { applyTheme(DB.settings.theme||'dark'); applyLogo(); render(); toast('Reloaded','success'); } else toast('Failed: ' + r.error, 'error'); }
 function saveSettings() { DB.settings.shop_name = document.getElementById('s-name').value.trim() || 'PHONE HUB'; DB.settings.shop_address = document.getElementById('s-addr').value.trim(); DB.settings.shop_phone = document.getElementById('s-phone').value.trim(); DB.settings.currency = document.getElementById('s-cur').value.trim() || 'LKR'; DB.settings.low_stock = Number(document.getElementById('s-low').value || 2); DB.settings.print_size = document.getElementById('s-print').value || '58mm'; save(); toast('Settings saved','success'); document.getElementById('side-shop-name').textContent = DB.settings.shop_name; }
-async function resetData() { const ok = await requireDangerConfirm('DELETE ALL DATA', 'Permanently erase everything from Firebase.', { warnings: 3, password: true, adminRole: true }); if (!ok) return; DB = createFreshDB(); await saveToServer(true); sessionStorage.removeItem('pos_user_id'); toast('🗑 ALL DATA DELETED','error',3000); setTimeout(()=>location.reload(), 900); }
+
+/* ═══════════════════════════════════════════════════════════
+   🆕 RESET — NOW CLEARS ALL CACHES ON ALL DEVICES
+   ═══════════════════════════════════════════════════════════ */
+async function resetData() {
+  const ok = await requireDangerConfirm('DELETE ALL DATA + ALL DEVICE CACHES',
+    'This will permanently erase: Firebase data, this device\'s cache, AND every logged-in device\'s cache. All devices will be force-reloaded.',
+    { warnings: 3, password: true, adminRole: true });
+  if (!ok) return;
+
+  syncing = true;
+  const icon = document.getElementById('sync-icon');
+  if (icon) icon.classList.add('spinning');
+  updateStorageStatus('saving');
+  toast('🗑 Clearing data...', 'info', 3000);
+
+  try {
+    // 1. Fresh DB in memory
+    DB = createFreshDB();
+    migrateDB();
+
+    // 2. Push fresh (empty) DB to Firebase
+    DB._lastSaved = Date.now();
+    await fbRef.set(DB);
+
+    // 3. Generate new reset token → broadcasts to ALL devices
+    const newToken = 'reset-' + Date.now() + '-' + Math.random().toString(36).slice(2,10);
+    await fbResetRef.set(newToken);
+
+    // 4. Verify Firebase is empty
+    await new Promise(r => setTimeout(r, 400));
+    const snap = await fbRef.once('value');
+    const remote = snap.val();
+    if (!isDBValid(remote)) throw new Error('Firebase write failed');
+
+    // 5. WIPE this device completely
+    await wipeAllCaches();
+
+    // 6. Store token so we don't reload again
+    try { localStorage.setItem(LS_RESET_TOKEN_KEY, newToken); } catch(e) {}
+
+    // 7. Show blank screen + reload
+    document.body.innerHTML = `<div style="position:fixed;inset:0;background:#0a0a0f;color:#fff;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:20px;z-index:99999;font-family:system-ui"><div style="font-size:64px">✅</div><h1 style="font-size:22px;margin:0">All Data Cleared</h1><p style="color:#888;max-width:340px;text-align:center;font-size:13px;line-height:1.6">Firebase + all device caches cleared. Reloading...</p></div>`;
+    setTimeout(() => location.reload(), 1800);
+
+  } catch(e) {
+    console.error('Reset failed:', e);
+    syncing = false;
+    if (icon) icon.classList.remove('spinning');
+    updateStorageStatus('disconnected');
+    toast('❌ Reset failed: ' + (e.message || 'Check internet'), 'error', 5000);
+  }
+}
 
 function showAddUser() { if (!requireAdmin()) return; openModal('Add User', `<div class="form-grid">${field('Username', '<input id="nu-username" class="ios-input" autocomplete="off">', true)}${field('Display name', '<input id="nu-name" class="ios-input">', true)}${field('Password', '<input id="nu-pass" class="ios-input" type="password" autocomplete="new-password">', true)}${field('Confirm password', '<input id="nu-pass2" class="ios-input" type="password" autocomplete="new-password">', true)}${field('Role', `<select id="nu-role" class="ios-input"><option value="cashier">Cashier</option><option value="manager">Manager</option><option value="admin">Admin</option></select>`, true)}</div>`, () => { const u = document.getElementById('nu-username').value.trim().toLowerCase(); const n = document.getElementById('nu-name').value.trim(); const p = document.getElementById('nu-pass').value; const p2 = document.getElementById('nu-pass2').value; if (!u || !n || !p){ toast('All required','error'); return false; } if (p !== p2){ toast('Passwords mismatch','error'); return false; } if (p.length < 4){ toast('Too short','error'); return false; } if (DB.users.find(x=>x.username===u)){ toast('Username taken','error'); return false; } DB.users.push({id:nextId('users'),username:u,name:n,password:hashPassword(p),role:document.getElementById('nu-role').value,active:true,photo:null,created_at:now()}); save(); toast('User added','success'); renderSettingsBody(); }); }
 function showEditUser(id) { if (!requireAdmin()) return; const u = DB.users.find(x=>x.id===id); if (!u) return; editingUserId = id; tempUserPhoto = undefined; const im = u.id === currentUser.id; const av = u.photo ? `<img src="${u.photo}" style="width:100%;height:100%;object-fit:cover">` : esc((u.name||'?').charAt(0).toUpperCase()); openModal(`Edit ${u.username}`, `<div class="form-grid"><div style="display:flex;align-items:center;gap:14px;padding:12px;background:var(--glass-hover);border-radius:var(--radius-md)"><div id="eu-photo-preview" style="width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:28px;overflow:hidden;flex-shrink:0">${av}</div><div style="flex:1;min-width:0"><div style="display:flex;gap:6px;flex-wrap:wrap"><label class="ios-pill blue sm" style="cursor:pointer;margin:0">📷 Upload<input type="file" accept="image/*" style="display:none" onchange="uploadUserPhoto(this.files[0]);this.value=''"></label>${u.photo ? `<button class="ios-pill red sm" onclick="removeUserPhoto()">🗑</button>` : ''}</div></div></div>${field('Name', `<input id="eu-name" class="ios-input" value="${esc(u.name)}">`, true)}${field('Role', `<select id="eu-role" class="ios-input" ${im?'disabled':''}><option value="cashier" ${u.role==='cashier'?'selected':''}>Cashier</option><option value="manager" ${u.role==='manager'?'selected':''}>Manager</option><option value="admin" ${u.role==='admin'?'selected':''}>Admin</option></select>`)}</div>`, () => { const u2 = DB.users.find(x=>x.id===editingUserId); if (!u2) return false; u2.name = document.getElementById('eu-name').value.trim() || u2.name; if (!im) u2.role = document.getElementById('eu-role').value; if (tempUserPhoto !== undefined) u2.photo = tempUserPhoto; save(); toast('Updated','success'); if (im){ updateUserBox(); buildNav(); } tempUserPhoto = undefined; editingUserId = null; renderSettingsBody(); }); }
@@ -2040,8 +2181,21 @@ document.addEventListener('mousedown', (e) => {
 
 /* INIT */
 (async function init() {
+  // 🆕 Check reset token BEFORE loading
+  try {
+    const snap = await fbResetRef.once('value');
+    const remoteToken = snap.val();
+    const localToken = localStorage.getItem(LS_RESET_TOKEN_KEY) || '';
+    if (remoteToken && remoteToken !== localToken) {
+      console.log('🚨 Reset token mismatch — wiping caches before load');
+      await wipeAllCaches();
+      try { localStorage.setItem(LS_RESET_TOKEN_KEY, remoteToken); } catch(e) {}
+    }
+  } catch(e) { console.warn('Reset token check failed:', e); }
+
   const cached = loadCache();
   if (isDBValid(cached)) { DB = cached; migrateDB(); applyTheme(DB.settings.theme || 'dark'); applyLogo(); document.getElementById('login-shop-name').textContent = DB.settings.shop_name; }
+
   const r = await loadFromServer();
   if (!r.ok) {
     document.getElementById('loading-screen').innerHTML = `<div style="text-align:center;padding:20px;max-width:440px"><div style="font-size:56px;margin-bottom:16px">📡</div><h2 style="font-size:20px;margin-bottom:8px">Cannot reach Firebase</h2><p style="color:var(--text-2);font-size:13px;line-height:1.6">Check internet connection, then retry.</p><button class="ios-pill blue" style="margin-top:16px" onclick="location.reload()">🔄 Retry</button></div>`;
@@ -2049,6 +2203,7 @@ document.addEventListener('mousedown', (e) => {
   }
   applyTheme(DB.settings.theme || 'dark'); applyLogo();
   document.getElementById('login-shop-name').textContent = DB.settings.shop_name;
+  rebuildOrderHistory();
   const sid = Number(sessionStorage.getItem('pos_user_id'));
   if (sid) { const u = DB.users.find(x => x.id === sid && x.active); if (u) currentUser = u; }
   if (currentUser) {
@@ -2060,6 +2215,7 @@ document.addEventListener('mousedown', (e) => {
   } else showLogin();
   fbInitDone = true;
   startRealtimeSync();
+  startResetListener();
   const vc = document.getElementById('version-chip'); if (vc) vc.textContent = POS_VERSION;
 })();
 document.getElementById('login-pass').addEventListener('keypress', e => { if (e.key==='Enter') doLogin(); });
