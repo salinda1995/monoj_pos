@@ -232,6 +232,11 @@ select.ios-input{cursor:pointer;appearance:none;background-image:url("data:image
 .chart-stat-best{border-color:rgba(255,159,10,.5);background:linear-gradient(135deg,rgba(255,159,10,.14),rgba(255,159,10,.03))}
 .chart-wrap{overflow:hidden;border-radius:var(--radius-md);padding:4px 0;position:relative}
 .chart-point{transition:all .15s}
+.chart-point.sel circle[data-anchor]{r:7;stroke:var(--text);stroke-width:2.5}
+.chart-point.sel rect[data-anchor]{filter:brightness(1.3)}
+.chart-point.sel rect:first-child{fill:rgba(255,255,255,.07)}
+.dash-tip{position:absolute;z-index:20;min-width:170px;max-width:240px;padding:10px 12px;background:var(--bg-grad-1);border:1px solid var(--glass-border-strong);border-radius:12px;box-shadow:0 10px 32px rgba(0,0,0,.5);animation:tipIn .15s ease-out}
+@keyframes tipIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 .chart-point:hover circle{stroke-width:3;filter:drop-shadow(0 0 10px currentColor)}
 
 @media print{
@@ -1012,8 +1017,13 @@ document.getElementById('nav').addEventListener('click', e => {
 function render() {
   if (!currentUser) return;
   if (!can(currentView)) currentView = firstAllowedView();
-  const c = document.getElementById('content'); c.innerHTML = '';
+  const c = document.getElementById('content');
+  const sameView = c.dataset.view === currentView;
+  const prevScroll = sameView ? (c.querySelector('.view-scroll')?.scrollTop || 0) : 0;
+  c.innerHTML = '';
   (views[currentView]||renderDashboard)(c);
+  c.dataset.view = currentView;
+  if (prevScroll) { const sv = c.querySelector('.view-scroll'); if (sv) sv.scrollTop = prevScroll; }
   applyLogo(); document.getElementById('side-shop-name').textContent = DB.settings.shop_name;
   buildMobileTabs();
 }
@@ -1225,9 +1235,232 @@ function dashboardLineChart() {
 function dashSetChartRange(r) {
   if (dashChartRange === r) return;
   dashChartRange = r;
-  renderDashboard(document.getElementById('content'));
+  dashRefreshCharts();
 }
 
+/* ═══════════════════════════════════════════════════════════
+   🆕 DASHBOARD ANALYTICS — Trends (any item) / Overview / Cash In-Out
+   ═══════════════════════════════════════════════════════════ */
+let dashChartTab = 'trends';   // 'trends' | 'overview' | 'cash'
+let dashMetric = 'sales';
+
+function chartBuckets(range) {
+  const out = [];
+  const pad = n => String(n).padStart(2,'0');
+  if (range === '7d' || range === '30d') {
+    const cnt = range === '7d' ? 7 : 30;
+    const base = new Date(); base.setHours(0,0,0,0);
+    for (let i = cnt-1; i >= 0; i--) {
+      const d = new Date(base); d.setDate(base.getDate()-i);
+      out.push({ key:`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`,
+        label: range==='7d' ? d.toLocaleDateString('en-US',{weekday:'short'}) : String(d.getDate()),
+        fullLabel: d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) });
+    }
+  } else if (range === '12m') {
+    const base = new Date(); base.setDate(1); base.setHours(0,0,0,0);
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(base); d.setMonth(base.getMonth()-i);
+      out.push({ key:`${d.getFullYear()}-${pad(d.getMonth()+1)}`, label:d.toLocaleDateString('en-US',{month:'short'}),
+        fullLabel:d.toLocaleDateString('en-US',{month:'short',year:'numeric'}) });
+    }
+  } else {
+    const y = new Date().getFullYear();
+    for (let i = 4; i >= 0; i--) out.push({ key:String(y-i), label:String(y-i), fullLabel:String(y-i) });
+  }
+  return out;
+}
+
+function dashMetricDefs() {
+  const sumBy = (arr, key, f) => arr.filter(x => (x.created_at||'').startsWith(key)).reduce((a,x)=>a+f(x),0);
+  const cntBy = (arr, key) => arr.filter(x => (x.created_at||'').startsWith(key)).length;
+  const defs = [
+    { id:'sales',   label:'💰 Sales',        money:true,  color:'var(--blue)',   fn:k=>sumBy(DB.sales,k,s=>Number(s.total)||0) },
+    { id:'count',   label:'🧾 Transactions', money:false, color:'var(--teal)',   fn:k=>cntBy(DB.sales,k) },
+    { id:'returns', label:'↩️ Returns',      money:true,  color:'var(--red)',    fn:k=>sumBy(DB.returns||[],k,r=>Number(r.refund_amount)||0) },
+    { id:'repairs', label:'🔧 Repairs',      money:false, color:'var(--orange)', fn:k=>cntBy(DB.repairs||[],k) },
+    { id:'orders',  label:'📋 Orders',       money:false, color:'var(--purple, #bf5af2)', fn:k=>cntBy(DB.orders||[],k) },
+    { id:'creditpay', label:'💳 Credit Paid',money:true,  color:'var(--green)',  fn:k=>sumBy(DB.credit_payments||[],k,p=>Number(p.amount)||0) },
+  ];
+  if (canSeeCost()) defs.splice(1, 0, { id:'profit', label:'📈 Profit', money:true, color:'var(--green)',
+    fn:k=>sumBy(DB.sales,k,s=>(Number(s.total)||0)-(Number(s.cost_total)||0)) });
+  return defs;
+}
+
+function dashRangeToggle(range) {
+  return `<div class="chart-toggle">${[['7d','7D'],['30d','30D'],['12m','12M'],['5y','5Y']].map(([v,t]) =>
+    `<button class="chart-btn ${range===v?'active':''}" onclick="dashSetChartRange('${v}')">${t}</button>`).join('')}</div>`;
+}
+function dashStat(label, val, cls='') {
+  return `<div class="chart-stat"><div class="muted small" style="font-weight:700;text-transform:uppercase;letter-spacing:.05em">${label}</div><div class="strong ${cls}">${val}</div></div>`;
+}
+function svgAxes(W,H,PL,PR,PT,PB,max) {
+  const ih = H-PT-PB;
+  return [0,.25,.5,.75,1].map(f => { const y = PT+ih-f*ih;
+    return `<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="var(--separator)" stroke-dasharray="3 5" opacity=".6"/><text x="${PL-8}" y="${y+4}" text-anchor="end" fill="var(--text-3)" font-size="10" font-weight="600">${fmtInt(max*f)}</text>`;
+  }).join('');
+}
+function svgXLabels(items, xFn, H) {
+  const n = items.length, step = n <= 12 ? 1 : Math.ceil(n/10);
+  return items.map((b,i) => (n>12 && i%step!==0 && i!==n-1) ? '' :
+    `<text x="${xFn(i)}" y="${H-16}" text-anchor="middle" fill="var(--text-3)" font-size="10" font-weight="600">${esc(b.label)}</text>`).join('');
+}
+
+/* TAB 1 — trend of any selected item */
+function dashTrendsBody(range) {
+  const defs = dashMetricDefs();
+  const m = defs.find(d => d.id === dashMetric) || defs[0];
+  const data = chartBuckets(range).map(b => ({ ...b, value: m.fn(b.key), all: defs.map(d => ({ id:d.id, label:d.label, money:d.money, v:d.fn(b.key) })) }));
+  const n = data.length, total = data.reduce((a,x)=>a+x.value,0);
+  const best = data.reduce((a,b)=> b.value > a.value ? b : a, data[0]);
+  const max = Math.max(1, ...data.map(x=>x.value));
+  const W=820,H=280,PL=60,PR=24,PT=34,PB=44, iw=W-PL-PR, ih=H-PT-PB;
+  const px = i => PL + (n===1 ? iw/2 : iw*(i/(n-1)));
+  const py = v => PT+ih-(v/max)*ih;
+  const path = data.map((p,i)=>`${i?'L':'M'} ${px(i).toFixed(1)} ${py(p.value).toFixed(1)}`).join(' ');
+  const area = `M ${px(0)} ${PT+ih} L ${data.map((p,i)=>`${px(i).toFixed(1)} ${py(p.value).toFixed(1)}`).join(' L ')} L ${px(n-1)} ${PT+ih} Z`;
+  const fmt = v => m.money ? fmtInt(v) : String(Math.round(v));
+  const dots = data.map((p,i) => { const isBest = p===best && p.value>0;
+    return `<g class="chart-point" style="cursor:pointer" onclick="dashPick(${i},this)">
+      <circle cx="${px(i)}" cy="${py(p.value)}" r="16" fill="transparent"/>
+      <circle data-anchor="1" cx="${px(i)}" cy="${py(p.value)}" r="${isBest?6:4}" fill="${isBest?'var(--orange)':m.color}" stroke="var(--bg-grad-1)" stroke-width="2"/>
+      ${isBest?`<text x="${px(i)}" y="${py(p.value)-14}" text-anchor="middle" fill="var(--orange)" font-size="10.5" font-weight="800">★ ${fmt(p.value)}</text>`:''}</g>`; }).join('');
+  dashPickCtx = data.map(p => ({ title: p.fullLabel, lines: p.all.map(a => [a.label, a.money ? fmtInt(a.v) : String(a.v), a.id===m.id ? 'strong primary-c' : '']) }));
+  return `
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${defs.map(d =>
+      `<button class="chart-btn ${d.id===m.id?'active':''}" style="border:1px solid var(--glass-border)" onclick="dashSetMetric('${d.id}')">${d.label}</button>`).join('')}</div>
+    <div class="chart-stats">
+      ${dashStat('Total', fmt(total), 'primary-c')}
+      ${dashStat('Average', fmt(total/n))}
+      ${dashStat('⭐ Best', fmt(best.value>0?best.value:0))}
+      ${dashStat('Best day', best.value>0?esc(best.fullLabel):'-')}
+    </div>
+    <div id="dash-chart-outer" style="position:relative" onclick="dashOuterClick(event)"><div class="chart-wrap"><svg viewBox="0 0 ${W} ${H}" width="100%" height="280" role="img" aria-label="${esc(m.label)} trend">
+      <defs><linearGradient id="trGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${m.color}" stop-opacity=".38"/><stop offset="100%" stop-color="${m.color}" stop-opacity="0"/></linearGradient></defs>
+      ${svgAxes(W,H,PL,PR,PT,PB,max)}
+      <path d="${area}" fill="url(#trGrad)"/><path d="${path}" fill="none" stroke="${m.color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      ${dots}${svgXLabels(data,px,H)}</svg></div></div>`;
+}
+
+/* TAB 2 — snapshot of every dashboard stat card */
+function dashOverviewBody() {
+  const vis = canSeeCost();
+  const inStockUnits = DB.stock_units.filter(u=>u.status==='in_stock');
+  const money = [
+    ['📱 Phone Stock (Cost)', inStockUnits.reduce((a,u)=>a+(Number(u.cost_price)||0),0), 'var(--blue)'],
+    ['📦 Accessory Stock (Cost)', DB.accessories.reduce((a,x)=>a+(Number(x.cost_price)||0)*(Number(x.qty)||0),0), 'var(--teal)'],
+    ['💳 Total Credit', getTotalCredit(), 'var(--orange)'],
+    ['🏪 Shop Outstanding', DB.shops.reduce((a,s)=>a+calcShopOutstanding(s),0), 'var(--red)'],
+  ];
+  if (vis) {
+    money.splice(1,0,['📱 Phone Stock (Sale)', inStockUnits.reduce((a,u)=>a+(Number(u.sale_price)||0),0), 'var(--green)']);
+    money.splice(3,0,['📦 Accessory Stock (Sale)', DB.accessories.reduce((a,x)=>a+(Number(x.sale_price)||0)*(Number(x.qty)||0),0), 'var(--green)']);
+  }
+  const counts = [
+    ['📱 Phones In Stock', inStockUnits.length, 'var(--blue)'],
+    ['📦 Accessories Qty', DB.accessories.reduce((a,x)=>a+(x.qty||0),0), 'var(--teal)'],
+    ['🔧 Active Repairs', DB.repairs.filter(r=>r.status!=='delivered').length, 'var(--orange)'],
+    ['📋 Active Orders', DB.orders.filter(o=>o.status!=='delivered'&&o.status!=='cancelled').length, 'var(--purple, #bf5af2)'],
+    ['💳 Customers on Credit', DB.customers.filter(c=>(Number(c.balance)||0)>0).length, 'var(--red)'],
+    ['🔎 Total Invoices', DB.sales.length, 'var(--text-2)'],
+  ];
+  const bars = (rows, isMoney) => { const mx = Math.max(1, ...rows.map(r=>r[1]));
+    return rows.map(([l,v,c]) => `<div style="margin-bottom:11px"><div class="row" style="justify-content:space-between;margin-bottom:4px"><span class="small strong">${l}</span><b class="small">${fmtInt(v)}</b></div>
+      <div style="height:10px;border-radius:6px;background:var(--glass-hover);overflow:hidden"><div style="height:100%;width:${Math.max(v>0?2:0,v/mx*100)}%;background:${c};border-radius:6px;transition:width .4s"></div></div></div>`).join(''); };
+  return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:18px" class="dash-2col">
+    <div><div class="field-label" style="margin-bottom:10px">Amounts (Rs)</div>${bars(money,true)}</div>
+    <div><div class="field-label" style="margin-bottom:10px">Counts</div>${bars(counts,false)}</div></div>
+    <div class="muted small" style="margin-top:2px">Current snapshot — not date-based.</div>`;
+}
+
+/* TAB 3 — Cash In vs Cash Out */
+function dashCashBody(range) {
+  const data = chartBuckets(range).map(b => { const c = getCashSummary(b.key);
+    return { ...b, inn: c.salesCash + c.creditCash + c.cashIns, out: c.cashOuts + c.cashReturns, c }; });
+  const n = data.length;
+  const tIn = data.reduce((a,x)=>a+x.inn,0), tOut = data.reduce((a,x)=>a+x.out,0);
+  const max = Math.max(1, ...data.map(x=>Math.max(x.inn,x.out)));
+  const W=820,H=280,PL=60,PR=24,PT=30,PB=44, iw=W-PL-PR, ih=H-PT-PB;
+  const slot = iw/n, bw = Math.max(3, Math.min(22, slot*0.36));
+  const cx = i => PL + slot*i + slot/2;
+  const h = v => (v/max)*ih;
+  const bars = data.map((d,i) => `<g class="chart-point" style="cursor:pointer" onclick="dashPick(${i},this)">
+    <rect x="${PL+slot*i}" y="${PT}" width="${slot}" height="${ih}" fill="transparent"/>
+    <rect ${d.inn>=d.out?'data-anchor="1" ':''}x="${cx(i)-bw-1}" y="${PT+ih-h(d.inn)}" width="${bw}" height="${h(d.inn)}" rx="3" fill="var(--green)"/>
+    <rect ${d.inn<d.out?'data-anchor="1" ':''}x="${cx(i)+1}" y="${PT+ih-h(d.out)}" width="${bw}" height="${h(d.out)}" rx="3" fill="var(--orange)"/></g>`).join('');
+  dashPickCtx = data.map(d => ({ title: d.fullLabel, lines: [
+    ['💵 Cash In', fmtInt(d.inn), 'strong success'],
+    ['· Cash sales', fmtInt(d.c.salesCash), 'muted'],
+    ['· Credit payments', fmtInt(d.c.creditCash), 'muted'],
+    ['· Manual cash in', fmtInt(d.c.cashIns), 'muted'],
+    ['💸 Cash Out', fmtInt(d.out), 'strong warn'],
+    ['· Manual cash out', fmtInt(d.c.cashOuts), 'muted'],
+    ['· Cash refunds', fmtInt(d.c.cashReturns), 'muted'],
+    ['Net', (d.inn-d.out>=0?'+':'')+fmtInt(d.inn-d.out), d.inn-d.out>=0?'strong success':'strong danger-c'] ] }));
+  const allMoves = (DB.cash_transactions||[]).slice().sort((a,b)=>b.id-a.id); const recent = allMoves.slice(0,3);
+  return `
+    <div class="chart-stats">
+      ${dashStat('💵 Cash In', fmtInt(tIn), 'success')}
+      ${dashStat('💸 Cash Out', fmtInt(tOut), 'warn')}
+      ${dashStat('Net', (tIn-tOut>=0?'+':'')+fmtInt(tIn-tOut), tIn-tOut>=0?'success':'danger-c')}
+    </div>
+    <div class="row small muted" style="gap:14px;margin-bottom:6px"><span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--green)"></span> In (sales + credit payments + manual)</span><span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--orange)"></span> Out (cash out + refunds)</span></div>
+    <div id="dash-chart-outer" style="position:relative" onclick="dashOuterClick(event)"><div class="chart-wrap"><svg viewBox="0 0 ${W} ${H}" width="100%" height="280" role="img" aria-label="Cash in and out chart">
+      ${svgAxes(W,H,PL,PR,PT,PB,max)}${bars}${svgXLabels(data,cx,H)}</svg></div></div>
+    ${recent.length ? `<div class="field-label" style="margin:12px 0 6px">Last 3 cash movements</div><ul class="list">${recent.map(t=>`<li><div><div class="strong small">${t.type==='cash_out'?'💸':'💵'} ${esc(t.note)}</div><div class="muted small">${esc(t.category||'Other')} · ${esc((t.created_at||'').slice(0,16).replace('T',' '))}</div></div><b class="${t.type==='cash_out'?'warn':'success'}">${t.type==='cash_out'?'-':'+'}${fmtInt(t.amount)}</b></li>`).join('')}</ul>${allMoves.length>3?`<button class="ios-pill ghost sm" style="margin-top:8px;width:100%" onclick="showAllCashMovements()">More (${allMoves.length-3}) ›</button>`:''}` : ''}`;
+}
+
+function dashboardChartsCard() {
+  const tab = dashChartTab, range = dashChartRange; dashPickIdx = -1; dashPickCtx = [];
+  const tabs = [['trends','📈 Trends'],['overview','📊 Overview'],['cash','💵 Cash In/Out']];
+  const body = tab==='overview' ? dashOverviewBody() : tab==='cash' ? dashCashBody(range) : dashTrendsBody(range);
+  return `<div id="dash-charts-card" class="card chart-card" style="margin-bottom:14px">
+    <div class="chart-head"><div class="chart-toggle">${tabs.map(([v,t]) =>
+      `<button class="chart-btn ${tab===v?'active':''}" onclick="dashSetChartTab('${v}')">${t}</button>`).join('')}</div>
+      ${tab==='overview' ? '' : dashRangeToggle(range)}</div>
+    ${body}</div>`;
+}
+function dashSetChartTab(t) { dashChartTab = t; dashRefreshCharts(); }
+function dashSetMetric(m) { dashMetric = m; dashRefreshCharts(); }
+function dashRefreshCharts() {
+  const el = document.getElementById('dash-charts-card');
+  if (!el) { renderDashboard(document.getElementById('content')); return; }
+  el.outerHTML = dashboardChartsCard();
+}
+
+
+/* Click-to-popup on chart points */
+let dashPickCtx = [], dashPickIdx = -1;
+function dashClosePick() {
+  document.getElementById('dash-tip')?.remove(); dashPickIdx = -1;
+  document.querySelectorAll('#dash-chart-outer .chart-point.sel').forEach(x => x.classList.remove('sel'));
+}
+function dashOuterClick(e) { if (e.target.closest('.chart-point, #dash-tip')) return; dashClosePick(); }
+function dashPick(i, el) {
+  const outer = document.getElementById('dash-chart-outer'); if (!outer) return;
+  if (dashPickIdx === i) { dashClosePick(); return; }
+  const row = dashPickCtx[i]; if (!row) return;
+  dashClosePick(); dashPickIdx = i; el.classList.add('sel');
+  const tip = document.createElement('div'); tip.id = 'dash-tip'; tip.className = 'dash-tip';
+  tip.innerHTML = `<div class="row" style="justify-content:space-between;gap:10px;margin-bottom:6px"><b>${esc(row.title)}</b><button onclick="dashClosePick()" style="color:var(--text-3);font-size:14px;line-height:1">✕</button></div>` +
+    row.lines.map(([l,v,c]) => `<div class="row" style="justify-content:space-between;gap:14px;padding:2px 0;font-size:12px"><span class="${c.includes('muted')?'muted':''}">${esc(l)}</span><span class="${c}">${esc(v)}</span></div>`).join('');
+  tip.style.visibility = 'hidden'; outer.appendChild(tip);
+  const anchor = el.querySelector('[data-anchor]') || el;
+  const ar = anchor.getBoundingClientRect(), or = outer.getBoundingClientRect();
+  const tw = tip.offsetWidth, th = tip.offsetHeight, cx = ar.left + ar.width/2 - or.left;
+  let top = ar.top - or.top - th - 10; if (top < 4) top = ar.bottom - or.top + 10;
+  tip.style.left = Math.max(4, Math.min(cx - tw/2, or.width - tw - 4)) + 'px';
+  tip.style.top = top + 'px'; tip.style.visibility = 'visible';
+}
+
+/* "More" — full list of cash in/out */
+function showAllCashMovements(scope) {
+  let all = (DB.cash_transactions||[]).slice().sort((a,b)=>b.id-a.id);
+  if (scope === 'today') all = cashMovementList();
+  const li = t => `<li><div class="l-info"><div class="strong small">${t.type==='cash_out'?'💸 Cash Out':'💵 Cash In'} · ${esc(t.note)}</div><div class="muted small">${esc(t.category||'Other')} · ${esc((t.created_at||'').slice(0,16).replace('T',' '))}</div></div><b class="${t.type==='cash_out'?'warn':'success'}">${t.type==='cash_out'?'-':'+'}${fmtInt(t.amount)}</b></li>`;
+  openModal(scope==='today' ? '💵 Today — All Cash In/Out' : '💵 All Cash In/Out',
+    all.length ? `<div style="max-height:60vh;overflow:auto"><ul class="list">${all.map(li).join('')}</ul></div>` : '<p class="muted center pad small">No cash movements</p>',
+    () => {}, 'Close');
+}
 /* DASHBOARD */
 let dashQuery = '';
 function renderDashboard(root) {
@@ -1259,6 +1492,7 @@ function renderDashboard(root) {
   let recentRepairs = [...DB.repairs].sort((a,b)=>b.id-a.id);
   if (q) { recentSales = recentSales.filter(s => { const c = DB.customers.find(x=>x.id===s.customer_id); return (s.invoice_no||'').toLowerCase().includes(q) || (c?.name||'').toLowerCase().includes(q); }); recentRepairs = recentRepairs.filter(r => { const c = DB.customers.find(x=>x.id===r.customer_id); return (r.job_no||'').toLowerCase().includes(q) || (r.device_brand||'').toLowerCase().includes(q) || (r.device_model||'').toLowerCase().includes(q) || (c?.name||'').toLowerCase().includes(q); }); }
   recentSales = recentSales.slice(0,6); recentRepairs = recentRepairs.slice(0,6);
+  const _sv = root.querySelector('.view-scroll'), _prev = _sv ? _sv.scrollTop : 0;
   root.innerHTML = `<div class="view-shell">
     <div class="page-head"><div><h1>Dashboard</h1><p>${new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})}</p></div><div class="head-actions"><button class="ios-pill orange sm" onclick="showCashMovement('cash_out')">💸 Cash Out</button><button class="ios-pill green sm" onclick="showCashMovement('cash_in')">💵 Cash In</button></div></div>
     <div class="search-row">${searchBar('dash-search','🔍 Search sales, repairs, customers...','dashSearch(this.value)')}</div>
@@ -1278,12 +1512,12 @@ function renderDashboard(root) {
         <div class="stat" onclick="navigateTo('billsearch')"><div class="stat-icon">🔎</div><div class="stat-label">Bill Search</div><div class="stat-value primary-c">${DB.sales.length}</div><div class="stat-sub">total invoices</div></div>
       </div>
       ${(()=>{ const cs=getCashSummary(); return `<div class="stat-grid" style="margin-bottom:14px"><div class="stat" onclick="showCashBalance()"><div class="stat-icon">💵</div><div class="stat-label">Cashier Cash</div><div class="stat-value success">${fmtInt(cs.balance)}</div><div class="stat-sub">recorded cash balance today</div></div><div class="stat"><div class="stat-icon">💸</div><div class="stat-label">Cash Out Today</div><div class="stat-value warn">${fmtInt(cs.cashOuts)}</div><div class="stat-sub">${cashMovementList().length} cash movement${cashMovementList().length!==1?'s':''}</div></div></div>`; })()}
-      ${dashboardLineChart()}
+      ${dashboardChartsCard()}
       ${(totalCredit > 0 || totalShopOutstanding > 0) ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px" class="dash-2col">
         ${totalCredit > 0 ? `<div class="card" style="border-color:rgba(255,159,10,.5);cursor:pointer" onclick="navigateTo('customers')"><h3>💳 Customer Credit <span style="float:right;color:var(--blue);font-size:12px">View all ›</span></h3><ul class="list">${DB.customers.filter(c=>(Number(c.balance)||0) > 0).sort((a,b)=>b.balance-a.balance).slice(0,6).map(c=>`<li onclick="event.stopPropagation();recordCreditPayment(${c.id})" style="cursor:pointer"><div class="l-info"><div class="strong">${esc(c.name)}</div><div class="muted small">${esc(c.phone||'-')}</div></div><div class="row gap"><span class="danger-c strong">${fmtInt(c.balance)}</span><button class="ios-pill orange sm">Pay</button></div></li>`).join('')}</ul></div>` : ''}
         ${totalShopOutstanding > 0 ? `<div class="card" style="border-color:rgba(255,69,58,.5);cursor:pointer" onclick="navigateTo('shoprepair')"><h3>🏪 Shop Outstanding <span style="float:right;color:var(--blue);font-size:12px">View all ›</span></h3><ul class="list">${DB.shops.filter(s=>calcShopOutstanding(s) > 0.5).sort((a,b)=>calcShopOutstanding(b)-calcShopOutstanding(a)).slice(0,6).map(s=>`<li><div class="l-info"><div class="strong">${esc(s.name)}</div><div class="muted small">${esc(s.phone||'-')}</div></div><div class="row gap"><span class="danger-c strong">${fmtInt(calcShopOutstanding(s))}</span></div></li>`).join('')}</ul></div>` : ''}
       </div>` : ''}
-      <div class="card" style="margin-bottom:14px"><div class="row" style="justify-content:space-between;margin-bottom:8px"><h3>💵 Today's Cash Movements</h3><span class="muted small">Cashier: ${esc(currentUser?.name||'')}</span></div>${cashMovementList().length ? `<ul class="list">${cashMovementList().slice(0,8).map(t=>`<li><div class="l-info"><div class="strong">${t.type==='cash_out'?'💸 Cash Out':'💵 Cash In'} · ${esc(t.note)}</div><div class="muted small">${esc(t.category||'Other')} · ${esc((t.created_at||'').slice(11,16))}</div></div><div class="${t.type==='cash_out'?'warn':'success'} strong">${t.type==='cash_out'?'-':'+'}${fmtInt(t.amount)}</div></li>`).join('')}</ul>` : '<p class="muted center pad small">No manual cash movements today</p>'}</div>
+      <div class="card" style="margin-bottom:14px"><div class="row" style="justify-content:space-between;margin-bottom:8px"><h3>💵 Today's Cash Movements</h3><span class="muted small">Cashier: ${esc(currentUser?.name||'')}</span></div>${cashMovementList().length ? `<ul class="list">${cashMovementList().slice(0,3).map(t=>`<li><div class="l-info"><div class="strong">${t.type==='cash_out'?'💸 Cash Out':'💵 Cash In'} · ${esc(t.note)}</div><div class="muted small">${esc(t.category||'Other')} · ${esc((t.created_at||'').slice(11,16))}</div></div><div class="${t.type==='cash_out'?'warn':'success'} strong">${t.type==='cash_out'?'-':'+'}${fmtInt(t.amount)}</div></li>`).join('')}</ul>${cashMovementList().length>3 ? `<button class="ios-pill ghost sm" style="margin-top:8px;width:100%" onclick="showAllCashMovements('today')">More (${cashMovementList().length-3}) ›</button>` : ''}` : '<p class="muted center pad small">No manual cash movements today</p>'}</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px" class="dash-2col">
         <div class="card" style="cursor:pointer" onclick="navigateTo('reports')"><h3>Recent Sales <span style="float:right;color:var(--blue);font-size:12px">View all ›</span></h3>${recentSales.length ? `<ul class="list">${recentSales.map(s=>{ const c = DB.customers.find(x=>x.id===s.customer_id); const rt = getSaleReturnTotal(s.id); return `<li><div class="l-info"><div class="strong">${esc(s.invoice_no)}${rt>0?' <span class="danger-c small">↩</span>':''}</div><div class="muted small">${esc(c?.name||'Walk-in')}${s.balance>0?` · <span class="warn">bal ${fmtInt(s.balance)}</span>`:''}</div></div><div class="success strong">${fmtInt(s.total)}</div></li>`; }).join('')}</ul>` : '<p class="muted pad center">No sales yet</p>'}</div>
         <div class="card" style="cursor:pointer" onclick="navigateTo('repairs')"><h3>Recent Repairs <span style="float:right;color:var(--blue);font-size:12px">View all ›</span></h3>${recentRepairs.length ? `<ul class="list">${recentRepairs.map(r=>{ const c = DB.customers.find(x=>x.id===r.customer_id); return `<li><div class="l-info"><div class="strong">${esc(r.device_brand)} ${esc(r.device_model)}</div><div class="muted small">${esc(r.job_no)} · ${esc(c?.name||'-')}</div></div><span class="badge badge-${r.status}">${r.status.replace(/_/g,' ')}</span></li>`; }).join('')}</ul>` : '<p class="muted pad center">No repairs yet</p>'}</div>
@@ -1291,6 +1525,7 @@ function renderDashboard(root) {
       ${(lowStock.length || lowAcc.length) ? `<div class="card" style="border-color:rgba(255,159,10,.4);margin-bottom:14px"><h3>⚠️ Low Stock Alerts</h3><ul class="list">${lowStock.map(p=>`<li style="cursor:pointer" onclick="navigateTo('phonestock')"><div>📱 ${esc(p.brand)} ${esc(p.model)} ${esc(p.storage||'')} ${codeChip(p.code)}</div><div class="warn strong">only ${p.cnt} left</div></li>`).join('')}${lowAcc.map(a=>`<li style="cursor:pointer" onclick="navigateTo('stock')"><div>📦 ${esc(a.name)} ${codeChip(a.code,true)} <span class="muted small">(${esc(a.category||'')})</span></div><div class="warn strong">only ${a.qty} left</div></li>`).join('')}</ul></div>` : ''}
     </div>
   </div>`;
+  if (_prev) { const sv = root.querySelector('.view-scroll'); if (sv) sv.scrollTop = _prev; }
   if (dashQuery) document.getElementById('dash-search').value = dashQuery;
 }
 function dashSearch(v){ dashQuery = v; renderDashboard(document.getElementById('content')); }
