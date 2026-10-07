@@ -163,7 +163,6 @@ select.ios-input{cursor:pointer;appearance:none;background-image:url("data:image
 .badge-admin{background:rgba(255,69,58,.18);color:var(--red)}
 .badge-manager{background:rgba(255,159,10,.18);color:var(--orange)}
 .badge-cashier{background:rgba(10,132,255,.18);color:var(--blue)}
-.badge-credit{background:rgba(255,159,10,.18);color:var(--orange)}
 .code-chip{display:inline-flex;align-items:center;padding:2px 7px;border-radius:6px;background:rgba(10,132,255,.15);color:var(--blue);font-family:'SF Mono',Menlo,Consolas,monospace;font-size:10px;font-weight:700;letter-spacing:.02em}
 .code-chip.acc{background:rgba(191,90,242,.15);color:var(--purple)}
 .code-chip.reload{background:rgba(100,210,255,.15);color:var(--teal)}
@@ -218,6 +217,23 @@ select.ios-input{cursor:pointer;appearance:none;background-image:url("data:image
 .loading-screen{position:fixed;inset:0;z-index:7000;display:flex;align-items:center;justify-content:center;background:var(--bg-grad-1);flex-direction:column;gap:16px;color:var(--text)}
 .spinner{width:44px;height:44px;border:4px solid var(--glass-border);border-top-color:var(--blue);border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
+
+/* 🆕 CHART STYLES */
+.chart-card{padding:16px}
+.chart-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.chart-toggle{display:inline-flex;padding:3px;background:var(--glass);border:1px solid var(--glass-border);border-radius:11px;gap:2px;backdrop-filter:var(--blur)}
+.chart-btn{padding:7px 13px;border-radius:8px;font-size:11.5px;font-weight:700;color:var(--text-2);transition:all .2s cubic-bezier(.4,0,.2,1);letter-spacing:.02em;min-width:48px}
+.chart-btn:hover{color:var(--text);background:var(--glass-hover)}
+.chart-btn.active{background:var(--blue);color:#fff;box-shadow:0 3px 12px rgba(10,132,255,.5)}
+.chart-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:14px}
+.chart-stat{padding:10px 12px;background:var(--glass-hover);border-radius:var(--radius-md);border:1px solid var(--glass-border);transition:all .15s}
+.chart-stat:hover{border-color:var(--glass-border-strong)}
+.chart-stat .strong{font-size:16px;margin-top:2px;font-weight:700;letter-spacing:-.02em}
+.chart-stat-best{border-color:rgba(255,159,10,.5);background:linear-gradient(135deg,rgba(255,159,10,.14),rgba(255,159,10,.03))}
+.chart-wrap{overflow:hidden;border-radius:var(--radius-md);padding:4px 0;position:relative}
+.chart-point{transition:all .15s}
+.chart-point:hover circle{stroke-width:3;filter:drop-shadow(0 0 10px currentColor)}
+
 @media print{
   body *{visibility:hidden}
   #receipt,#receipt *{visibility:visible}
@@ -301,6 +317,7 @@ body.sidebar-hidden .content{padding-left:54px}
 .cust-suggest-empty{padding:14px;text-align:center;color:var(--text-3);font-size:12px}
 .firebase-badge{position:fixed;bottom:14px;right:14px;z-index:400;padding:6px 12px;border-radius:999px;font-size:10.5px;font-weight:700;background:rgba(48,209,88,.15);color:var(--green);border:1px solid rgba(48,209,88,.4);backdrop-filter:var(--blur);display:flex;align-items:center;gap:6px;letter-spacing:.02em}
 .firebase-badge.offline{background:rgba(255,159,10,.15);color:var(--orange);border-color:rgba(255,159,10,.4)}
+.firebase-badge.pending{background:rgba(255,159,10,.22);color:var(--orange);border-color:rgba(255,159,10,.6);animation:pulse 1.6s infinite}
 .firebase-badge .fb-dot{width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor;animation:pulse 2s infinite}
 .sale-split{flex:1;display:grid;grid-template-columns:1.15fr .85fr;gap:12px;min-height:0;overflow:hidden}
 .sale-left{display:flex;flex-direction:column;min-height:0;overflow:hidden;gap:10px}
@@ -392,6 +409,11 @@ body.sidebar-hidden .content{padding-left:54px}
   .sale-done-amount{font-size:24px}
   .ow-step{font-size:9px;padding:6px 2px}
   .ow-step .ow-num{font-size:8px}
+  .chart-stats{grid-template-columns:repeat(2,1fr);gap:6px}
+  .chart-stat{padding:8px 10px}
+  .chart-stat .strong{font-size:14px}
+  .chart-btn{padding:6px 10px;font-size:11px;min-width:auto}
+  .chart-card{padding:12px}
 }
 @media (max-width: 400px){
   .content{padding:10px;padding-bottom:80px}
@@ -410,6 +432,8 @@ body.sidebar-hidden .content{padding-left:54px}
   .total-val{font-size:19px}
   .change-val{font-size:24px}
   .ios-search{height:36px;font-size:12px}
+  .chart-stats{grid-template-columns:1fr 1fr}
+  .chart-stat .strong{font-size:13px}
 }
 @media (max-width: 360px){
   .stat-grid{grid-template-columns:1fr 1fr;gap:6px}
@@ -474,7 +498,7 @@ body.sidebar-hidden .content{padding-left:54px}
       <button class="ios-btn danger" onclick="doLogout()">🚪 <span>Logout</span></button>
     </div>
     <div class="sidebar-footer">
-      <div><span class="version-chip" id="version-chip">v2.7</span></div>
+      <div><span class="version-chip" id="version-chip">v3.2</span></div>
       <div class="footer-line">
         powered by <a class="footer-link" href="https://www.lookmobile.online" target="_blank" rel="noopener">Look Mobile</a>
       </div>
@@ -507,12 +531,14 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const fbDB = firebase.database();
 const fbRef = fbDB.ref('pos_data');
-const fbResetRef = fbDB.ref('pos_reset_token'); // 🆕 Global reset broadcast
+const fbResetRef = fbDB.ref('pos_reset_token');
 
 const LS_KEY = 'phone_shop_pos_cache';
 const LS_SAFE_KEY = 'phone_shop_pos_safety_backup';
-const LS_RESET_TOKEN_KEY = 'pos_seen_reset_token'; // 🆕 Local: last-seen reset token
-const POS_VERSION = 'v2.7';
+const LS_RESET_TOKEN_KEY = 'pos_seen_reset_token';
+const LS_PENDING_KEY = 'pos_pending_changes';
+const LS_LAST_SYNC_KEY = 'pos_last_sync_ts';
+const POS_VERSION = 'v3.2';
 
 const DEFAULT_SETTINGS = { shop_name:'PHONE HUB', shop_address:'123 Main Street, Colombo', shop_phone:'077-0000000', currency:'LKR', low_stock:2, theme:'dark', shop_logo: null, print_size: '58mm' };
 const ROLE_PERMS = {
@@ -539,6 +565,7 @@ let tempOrderItems = [];
 let orderWizard = { brand:'', model:'', part:'', qty:1, note:'', step:0 };
 let currentOrderIdForDetail = null;
 let cachedBrandHistory = [], cachedModelHistory = {}, cachedPartHistory = {};
+let dashChartRange = '7d';   // 🆕 chart range: '7d' | '30d' | '12m' | '5y'
 
 function isMobile() { return window.matchMedia('(max-width: 768px)').matches; }
 function canSeeCost() { return currentUser && (currentUser.role === 'admin' || currentUser.role === 'manager'); }
@@ -550,80 +577,89 @@ function closeMobileSidebar() { if (isMobile()) document.body.classList.remove('
 function initSidebar() { try { if (localStorage.getItem('pos_sidebar_hidden') === '1') document.body.classList.add('sidebar-hidden'); } catch(e) {} }
 initSidebar();
 
-/* ═══════════════════════════════════════════════════════════
-   🆕 CACHE MANAGEMENT — FULL WIPE
-   ═══════════════════════════════════════════════════════════ */
 async function wipeAllCaches() {
-  // 1. localStorage — full clear
   try { localStorage.clear(); } catch(e) {}
-  // 2. sessionStorage — full clear
   try { sessionStorage.clear(); } catch(e) {}
-  // 3. IndexedDB — delete all databases
   try {
     if (indexedDB && indexedDB.databases) {
       const dbs = await indexedDB.databases();
-      for (const db of dbs) {
-        if (db.name) { try { indexedDB.deleteDatabase(db.name); } catch(e) {} }
-      }
+      for (const db of dbs) { if (db.name) { try { indexedDB.deleteDatabase(db.name); } catch(e) {} } }
     }
   } catch(e) {}
-  // 4. Service Workers — unregister all
-  try {
-    if ('serviceWorker' in navigator) {
-      const regs = await navigator.serviceWorker.getRegistrations();
-      for (const reg of regs) { try { await reg.unregister(); } catch(e) {} }
-    }
-  } catch(e) {}
-  // 5. CacheStorage — delete all caches
-  try {
-    if ('caches' in window) {
-      const keys = await caches.keys();
-      for (const k of keys) { try { await caches.delete(k); } catch(e) {} }
-    }
-  } catch(e) {}
+  try { if ('serviceWorker' in navigator) { const regs = await navigator.serviceWorker.getRegistrations(); for (const reg of regs) { try { await reg.unregister(); } catch(e) {} } } } catch(e) {}
+  try { if ('caches' in window) { const keys = await caches.keys(); for (const k of keys) { try { await caches.delete(k); } catch(e) {} } } } catch(e) {}
 }
 
 function saveSafetyBackup() { try { if (!DB || !DB.users || !DB.users.length) return; localStorage.setItem(LS_SAFE_KEY, JSON.stringify({ data: DB, ts: Date.now(), version: POS_VERSION })); } catch(e) {} }
 function loadSafetyBackup() { try { const r = localStorage.getItem(LS_SAFE_KEY); if (!r) return null; const p = JSON.parse(r); if (p && p.data && p.data.products && p.data.users && p.data.users.length) return p.data; } catch(e) {} return null; }
 function isDBValid(db) { if (!db || typeof db !== 'object') return false; if (!Array.isArray(db.users) || !db.users.length) return false; if (!Array.isArray(db.products)) return false; if (!Array.isArray(db.sales)) return false; if (!Array.isArray(db.customers)) return false; return true; }
 
+function hasPendingChanges() { try { return !!localStorage.getItem(LS_PENDING_KEY); } catch(e) { return false; } }
+function markPending() {
+  try { if (!localStorage.getItem(LS_PENDING_KEY)) localStorage.setItem(LS_PENDING_KEY, String(Date.now())); if (!localStorage.getItem(LS_LAST_SYNC_KEY)) localStorage.setItem(LS_LAST_SYNC_KEY, '0'); } catch(e) {}
+  updateStorageStatus('offline-pending');
+}
+function clearPending() { try { localStorage.removeItem(LS_PENDING_KEY); } catch(e) {} }
+function getLastSyncTs() { try { return Number(localStorage.getItem(LS_LAST_SYNC_KEY)) || 0; } catch(e) { return 0; } }
+function setLastSyncTs(ts) { try { localStorage.setItem(LS_LAST_SYNC_KEY, String(ts || Date.now())); } catch(e) {} }
+function getPendingAge() { try { const t = Number(localStorage.getItem(LS_PENDING_KEY)) || 0; return t ? Math.floor((Date.now() - t) / 1000) : 0; } catch(e) { return 0; } }
+
 async function manualSync() {
   if (syncing) { toast('Sync already running', 'info', 1500); return; }
   if (!DB || !isDBValid(DB)) { toast('❌ Data invalid', 'error'); return; }
-  if (!confirm('🔄 Force Sync with Firebase?')) return;
+  const pending = hasPendingChanges();
+  if (!pending && !confirm('🔄 Force Sync with Firebase?')) return;
   syncing = true;
   const icon = document.getElementById('sync-icon');
   if (icon) icon.classList.add('spinning');
   try {
-    updateStorageStatus('saving'); toast('Syncing...', 'info', 1500);
+    updateStorageStatus('saving');
+    if (pending) toast('📤 Pushing pending changes...', 'info', 1500);
     DB._lastSaved = Date.now(); saveSafetyBackup();
-    await fbRef.set(DB); await new Promise(r => setTimeout(r, 500));
+    await fbRef.set(DB);
+    setLastSyncTs(DB._lastSaved);
+    clearPending();
+    await new Promise(r => setTimeout(r, 400));
     const snap = await fbRef.once('value'); const remote = snap.val();
-    if (isDBValid(remote)) { DB = remote; migrateDB(); cacheLocal(); saveSafetyBackup(); }
+    if (isDBValid(remote) && !hasPendingChanges()) { DB = remote; migrateDB(); cacheLocal(); saveSafetyBackup(); }
     if (currentUser) { updateUserBox(); buildNav(); buildMobileTabs(); render(); }
-    updateStorageStatus('connected'); toast('✅ Synced', 'success', 2500);
-  } catch (e) { updateStorageStatus('disconnected'); toast('❌ Sync failed', 'error', 4000); }
-  finally { syncing = false; if (icon) icon.classList.remove('spinning'); }
+    updateStorageStatus('connected');
+    toast(pending ? '✅ Pending changes merged' : '✅ Synced', 'success', 2500);
+  } catch (e) {
+    markPending();
+    updateStorageStatus('offline-pending');
+    toast('❌ Sync failed — queued for retry', 'error', 4000);
+  } finally {
+    syncing = false;
+    if (icon) icon.classList.remove('spinning');
+  }
 }
 
 async function loadFromServer() {
   try {
     const c = loadCache();
     if (isDBValid(c)) { DB = c; migrateDB(); }
-
+    const pending = hasPendingChanges();
     const snap = await fbRef.once('value');
     const data = snap.val();
-
-    if (isDBValid(data)) { DB = data; migrateDB(); cacheLocal(); saveSafetyBackup(); fbConnected = true; updateStorageStatus('connected'); return { ok: true, hasData: true }; }
+    if (pending && isDBValid(DB)) {
+      fbConnected = true; updateStorageStatus('offline-pending');
+      setTimeout(() => flushPendingChanges(), 800);
+      return { ok: true, hasData: true, hadPending: true };
+    }
+    if (isDBValid(data)) {
+      DB = data; migrateDB(); cacheLocal(); saveSafetyBackup();
+      fbConnected = true; setLastSyncTs(data._lastSaved || Date.now());
+      updateStorageStatus('connected'); return { ok: true, hasData: true };
+    }
     if (isDBValid(DB)) { await saveToServer(true); fbConnected = true; updateStorageStatus('connected'); return { ok: true, hasData: true, pushed: true }; }
-
     const b = loadSafetyBackup();
     if (isDBValid(b)) { DB = b; migrateDB(); cacheLocal(); await saveToServer(true); fbConnected = true; updateStorageStatus('connected'); toast('♻️ Restored from backup', 'success', 3000); return { ok: true, hasData: true, restored: true }; }
-
     DB = createFreshDB(); migrateDB(); cacheLocal(); await saveToServer(true);
     fbConnected = true; updateStorageStatus('connected'); return { ok: true, hasData: false };
   } catch (e) {
-    fbConnected = false; updateStorageStatus('disconnected');
+    fbConnected = false;
+    updateStorageStatus(hasPendingChanges() ? 'offline-pending' : 'disconnected');
     if (isDBValid(DB)) return { ok: true, hasData: true, offline: true };
     const b = loadSafetyBackup();
     if (isDBValid(b)) { DB = b; migrateDB(); return { ok: true, hasData: true, offline: true, restored: true }; }
@@ -635,21 +671,57 @@ async function saveToServer(immediate = false) {
   if (!DB || !isDBValid(DB)) return;
   cacheLocal(); saveSafetyBackup();
   if (!immediate) { if (writeTimer) clearTimeout(writeTimer); writeTimer = setTimeout(() => saveToServer(true), 250); return; }
-  try { updateStorageStatus('saving'); DB._lastSaved = Date.now(); await fbRef.set(DB); fbConnected = true; updateStorageStatus('connected'); }
-  catch (e) { fbConnected = false; updateStorageStatus('disconnected'); }
+  try {
+    updateStorageStatus('saving');
+    DB._lastSaved = Date.now();
+    await fbRef.set(DB);
+    fbConnected = true;
+    setLastSyncTs(DB._lastSaved);
+    clearPending();
+    updateStorageStatus('connected');
+  } catch (e) {
+    fbConnected = false;
+    markPending();
+    setTimeout(() => { if (hasPendingChanges() && !syncing && fbConnected) flushPendingChanges(); }, 6000);
+  }
+}
+
+async function flushPendingChanges() {
+  if (!hasPendingChanges()) return false;
+  if (!DB || !isDBValid(DB)) return false;
+  if (syncing) return false;
+  syncing = true;
+  const icon = document.getElementById('sync-icon');
+  if (icon) icon.classList.add('spinning');
+  try {
+    updateStorageStatus('saving');
+    DB._lastSaved = Date.now();
+    await fbRef.set(DB);
+    setLastSyncTs(DB._lastSaved);
+    clearPending();
+    fbConnected = true;
+    updateStorageStatus('connected');
+    const age = getPendingAge();
+    toast(`✅ Pending changes synced${age ? ` (${age}s offline)` : ''}`, 'success', 2500);
+    return true;
+  } catch(e) { updateStorageStatus('offline-pending'); return false; }
+  finally { syncing = false; if (icon) icon.classList.remove('spinning'); }
 }
 
 function updateStorageStatus(state) {
   const dot = document.getElementById('storage-dot'), label = document.getElementById('storage-label');
   const badge = document.getElementById('firebase-badge'), bt = document.getElementById('fb-badge-text');
+  if (!state) state = hasPendingChanges() ? 'offline-pending' : (fbConnected ? 'connected' : 'disconnected');
   if (dot && label) {
     if (state === 'saving') { dot.className = 'storage-dot saving'; label.textContent = 'Syncing...'; }
     else if (state === 'connected') { dot.className = 'storage-dot connected'; label.textContent = 'Firebase synced'; }
+    else if (state === 'offline-pending') { dot.className = 'storage-dot saving'; const age = getPendingAge(); label.textContent = `⚠ Pending sync (${age}s)`; }
     else { dot.className = 'storage-dot disconnected'; label.textContent = 'Offline (cached)'; }
   }
   if (badge && bt) {
-    badge.classList.remove('hidden');
-    if (state === 'connected' || state === 'saving') { badge.classList.remove('offline'); bt.textContent = state === 'saving' ? 'Syncing...' : '🔥 Firebase'; }
+    badge.classList.remove('hidden', 'offline', 'pending');
+    if (state === 'connected' || state === 'saving') { bt.textContent = state === 'saving' ? 'Syncing...' : '🔥 Firebase'; }
+    else if (state === 'offline-pending') { badge.classList.add('pending'); bt.textContent = `⏳ Pending (${getPendingAge()}s)`; }
     else { badge.classList.add('offline'); bt.textContent = '⚠ Offline'; }
   }
 }
@@ -657,22 +729,16 @@ function updateStorageStatus(state) {
 function cacheLocal() { try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); } catch(e) {} }
 function loadCache() { try { const r = localStorage.getItem(LS_KEY); if (r) return JSON.parse(r); } catch(e) {} return null; }
 
-/* ═══════════════════════════════════════════════════════════
-   🆕 RESET TOKEN BROADCAST — clears cache on all devices
-   ═══════════════════════════════════════════════════════════ */
 function startResetListener() {
   fbResetRef.on('value', async (snap) => {
     const remoteToken = snap.val();
     if (!remoteToken) return;
     let localToken = '';
     try { localToken = localStorage.getItem(LS_RESET_TOKEN_KEY) || ''; } catch(e) {}
-    // If token matches — nothing to do
     if (localToken === remoteToken) return;
-    // 🆕 Token changed — someone reset data → WIPE this device's cache
     console.log('🚨 Reset token changed — wiping local cache');
     syncing = true;
     try { await wipeAllCaches(); } catch(e) {}
-    // Small delay so user sees a message
     if (currentUser) {
       document.body.innerHTML = `<div style="position:fixed;inset:0;background:#0a0a0f;color:#fff;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:20px;z-index:99999;font-family:system-ui"><div style="font-size:64px">🗑️</div><h1 style="font-size:22px;margin:0">Data Was Reset</h1><p style="color:#888;max-width:340px;text-align:center;font-size:13px;line-height:1.6">This device's cache has been cleared by another device. Reloading...</p></div>`;
     }
@@ -681,21 +747,36 @@ function startResetListener() {
 }
 
 function startRealtimeSync() {
-  fbDB.ref('.info/connected').on('value', (s) => { fbConnected = s.val() === true; if (!syncing) updateStorageStatus(fbConnected ? 'connected' : 'disconnected'); });
+  fbDB.ref('.info/connected').on('value', async (s) => {
+    const wasConnected = fbConnected;
+    fbConnected = s.val() === true;
+    if (fbConnected && !wasConnected && !syncing && hasPendingChanges()) {
+      toast('📡 Reconnected — merging local changes...', 'info', 2200);
+      await flushPendingChanges();
+      return;
+    }
+    if (!syncing) updateStorageStatus();
+  });
   fbRef.on('value', (snap) => {
     if (!fbInitDone || syncing) return;
+    if (hasPendingChanges()) { updateStorageStatus('offline-pending'); return; }
     const remote = snap.val(); if (!isDBValid(remote)) return;
     const ls = (DB.ids?.sales||0)+(DB.ids?.products||0), rs = (remote.ids?.sales||0)+(remote.ids?.products||0);
     if (ls === rs && (DB.sales||[]).length === (remote.sales||[]).length && (DB.customers||[]).length === (remote.customers||[]).length) return;
     const modalOpen = document.getElementById('modal-root').innerHTML.trim().length > 0;
     DB = remote; migrateDB(); cacheLocal(); saveSafetyBackup();
+    setLastSyncTs(remote._lastSaved || Date.now());
     if (modalOpen) return;
     try { updateUserBox(); buildNav(); buildMobileTabs(); render(); updateStorageStatus('connected'); toast('Synced from another device', 'info', 1800); } catch(e) {}
   });
+  setInterval(() => {
+    if (hasPendingChanges()) { if (fbConnected && !syncing) flushPendingChanges(); else updateStorageStatus('offline-pending'); }
+    else if (!syncing) updateStorageStatus();
+  }, 20000);
 }
 
 function createFreshDB() {
-  const d = { products:[], stock_units:[], accessories:[], customers:[], sales:[], sale_items:[], repairs:[], credit_payments:[], returns:[], stock_adjustments:[], shops:[], shop_repairs:[], shop_payments:[], suppliers:[], orders:[], order_items:[], users:[], settings:{...DEFAULT_SETTINGS}, ids:{products:1,stock_units:1,accessories:1,customers:1,sales:1,sale_items:1,repairs:1,credit_payments:1,returns:1,stock_adjustments:1,shops:1,shop_repairs:1,shop_payments:1,suppliers:1,orders:1,order_items:1,users:1} };
+  const d = { products:[], stock_units:[], accessories:[], customers:[], sales:[], sale_items:[], repairs:[], credit_payments:[], returns:[], stock_adjustments:[], shops:[], shop_repairs:[], shop_payments:[], suppliers:[], orders:[], order_items:[], cash_transactions:[], users:[], settings:{...DEFAULT_SETTINGS}, ids:{products:1,stock_units:1,accessories:1,customers:1,sales:1,sale_items:1,repairs:1,credit_payments:1,returns:1,stock_adjustments:1,shops:1,shop_repairs:1,shop_payments:1,suppliers:1,orders:1,order_items:1,cash_transactions:1,users:1} };
   initUsers(d); return d;
 }
 function initUsers(d) { d.users = [{id:1,username:'admin',password:hashPassword('admin123'),name:'Administrator',role:'admin',active:true,photo:null,created_at:now()},{id:2,username:'cashier',password:hashPassword('cashier123'),name:'Cashier',role:'cashier',active:true,photo:null,created_at:now()}]; d.ids.users = 3; }
@@ -707,9 +788,9 @@ function migrateDB() {
   if (DB.settings.shop_logo === undefined) DB.settings.shop_logo = null;
   if (!DB.settings.print_size) DB.settings.print_size = '58mm';
   if (!DB.users || !DB.users.length) initUsers(DB);
-  if (!DB.ids) DB.ids = {products:1,stock_units:1,accessories:1,customers:1,sales:1,sale_items:1,repairs:1,credit_payments:1,returns:1,stock_adjustments:1,shops:1,shop_repairs:1,shop_payments:1,suppliers:1,orders:1,order_items:1,users:DB.users.length+1};
-  ['accessories','credit_payments','returns','stock_adjustments','shops','shop_repairs','shop_payments','suppliers','orders','order_items'].forEach(k => { if (!DB.ids[k]) DB.ids[k] = 1; });
-  ['products','stock_units','accessories','customers','sales','sale_items','repairs','credit_payments','returns','stock_adjustments','shops','shop_repairs','shop_payments','suppliers','orders','order_items'].forEach(k => { if (!Array.isArray(DB[k])) DB[k] = []; });
+  if (!DB.ids) DB.ids = {products:1,stock_units:1,accessories:1,customers:1,sales:1,sale_items:1,repairs:1,credit_payments:1,returns:1,stock_adjustments:1,shops:1,shop_repairs:1,shop_payments:1,suppliers:1,orders:1,order_items:1,cash_transactions:1,users:DB.users.length+1};
+  ['accessories','credit_payments','returns','stock_adjustments','shops','shop_repairs','shop_payments','suppliers','orders','order_items','cash_transactions'].forEach(k => { if (!DB.ids[k]) DB.ids[k] = 1; });
+  ['products','stock_units','accessories','customers','sales','sale_items','repairs','credit_payments','returns','stock_adjustments','shops','shop_repairs','shop_payments','suppliers','orders','order_items','cash_transactions'].forEach(k => { if (!Array.isArray(DB[k])) DB[k] = []; });
   DB.products.forEach(p => { if (!p.code) p.code = makeProductCode(p.id); });
   DB.accessories.forEach(a => { if (!a.code) a.code = makeAccessoryCode(a.id); if (a.warranty_months === undefined) a.warranty_months = 0; if (a.barcode === undefined) a.barcode = ''; });
   DB.stock_units.forEach(u => { if (u.barcode === undefined) u.barcode = ''; });
@@ -729,7 +810,6 @@ function migrateDB() {
     if (it.part === undefined) it.part = '';
     if (it.note === undefined) it.note = '';
   });
-  // Rebuild autocomplete history cache
   rebuildOrderHistory();
 }
 function save() { saveToServer(false); }
@@ -745,30 +825,18 @@ function getSaleReturnTotal(saleId) { return DB.returns.filter(r => r.sale_id ==
 function calcShopOutstanding(s) { const reps = DB.shop_repairs.filter(r => r.shop_id === s.id); const t = reps.reduce((b,r)=>b+(Number(r.cost)||0),0); const rc = reps.reduce((b,r)=>b+(Number(r.received)||0),0); const pmts = (DB.shop_payments||[]).filter(p=>p.shop_id === s.id).reduce((b,p)=>b+(Number(p.amount)||0),0); return Math.max(0, t - rc - pmts); }
 function calcShopStats(s) { const reps = DB.shop_repairs.filter(r => r.shop_id === s.id); const payments = (DB.shop_payments||[]).filter(p=>p.shop_id === s.id); const billed = reps.reduce((b,r)=>b+(Number(r.cost)||0),0); const fromRepairs = reps.reduce((b,r)=>b+(Number(r.received)||0),0); const fromPayments = payments.reduce((b,p)=>b+(Number(p.amount)||0),0); const received = fromRepairs + fromPayments; return { reps, payments, billed, received, fromRepairs, fromPayments, outstanding: Math.max(0, billed - received) }; }
 
-/* 🆕 ORDER HISTORY AUTOCOMPLETE CACHE */
 function rebuildOrderHistory() {
-  const brands = new Set();
-  const modelsByBrand = {};
-  const partsByBrandModel = {};
+  const brands = new Set(); const modelsByBrand = {}; const partsByBrandModel = {};
   DB.order_items.forEach(it => {
-    const b = (it.brand||'').trim();
-    const m = (it.model||'').trim();
-    const p = (it.part||'').trim();
+    const b = (it.brand||'').trim(), m = (it.model||'').trim(), p = (it.part||'').trim();
     if (b) brands.add(b);
     if (b && m) { if (!modelsByBrand[b]) modelsByBrand[b] = new Set(); modelsByBrand[b].add(m); }
     if (b && m && p) { const key = b + '|' + m; if (!partsByBrandModel[key]) partsByBrandModel[key] = new Set(); partsByBrandModel[key].add(p); }
   });
-  // Also add from products
-  DB.products.forEach(prod => {
-    const b = (prod.brand||'').trim(); const m = (prod.model||'').trim();
-    if (b) brands.add(b);
-    if (b && m) { if (!modelsByBrand[b]) modelsByBrand[b] = new Set(); modelsByBrand[b].add(m); }
-  });
+  DB.products.forEach(prod => { const b = (prod.brand||'').trim(); const m = (prod.model||'').trim(); if (b) brands.add(b); if (b && m) { if (!modelsByBrand[b]) modelsByBrand[b] = new Set(); modelsByBrand[b].add(m); } });
   cachedBrandHistory = [...brands].sort();
-  cachedModelHistory = {};
-  Object.keys(modelsByBrand).forEach(k => { cachedModelHistory[k] = [...modelsByBrand[k]].sort(); });
-  cachedPartHistory = {};
-  Object.keys(partsByBrandModel).forEach(k => { cachedPartHistory[k] = [...partsByBrandModel[k]].sort(); });
+  cachedModelHistory = {}; Object.keys(modelsByBrand).forEach(k => { cachedModelHistory[k] = [...modelsByBrand[k]].sort(); });
+  cachedPartHistory = {}; Object.keys(partsByBrandModel).forEach(k => { cachedPartHistory[k] = [...partsByBrandModel[k]].sort(); });
 }
 
 function applyLogo() { const logo = DB?.settings?.shop_logo; const sw = document.getElementById('sidebar-logo-wrap'); const lw = document.getElementById('login-logo-wrap'); const h = logo ? `<img src="${logo}" class="brand-logo" alt="">` : `<div class="brand-icon">📱</div>`; if (sw) sw.innerHTML = h; if (lw) lw.innerHTML = h; }
@@ -968,23 +1036,197 @@ document.addEventListener('keydown', e => {
       const idx = allFields.indexOf(e.target);
       if (idx < 0) return;
       e.preventDefault();
-      if (idx < allFields.length - 1) {
-        const next = allFields[idx + 1];
-        next.focus();
-        try { if (next.select && next.type !== 'date') next.select(); } catch(_) {}
-      } else {
-        const ok = document.getElementById('modal-ok');
-        if (ok) ok.click();
-      }
+      if (idx < allFields.length - 1) { const next = allFields[idx + 1]; next.focus(); try { if (next.select && next.type !== 'date') next.select(); } catch(_) {} }
+      else { const ok = document.getElementById('modal-ok'); if (ok) ok.click(); }
       return;
     }
     return;
   }
-  if (currentView === 'sales' && tag === 'input' && e.target.id !== 'sales-search-input') {
-    e.preventDefault();
-    completeSale();
-  }
+  if (currentView === 'sales' && tag === 'input' && e.target.id !== 'sales-search-input') { e.preventDefault(); completeSale(); }
 });
+
+/* CASH MOVEMENTS */
+function getCashSummary(dateStr = today()) {
+  const salesCash = DB.sales.filter(s => (s.created_at||'').startsWith(dateStr) && (s.payment_method||'cash') === 'cash').reduce((a,s)=>a+(Number(s.paid_amount)||0),0);
+  const creditCash = (DB.credit_payments||[]).filter(p => (p.created_at||'').startsWith(dateStr) && (p.method||'cash') === 'cash').reduce((a,p)=>a+(Number(p.amount)||0),0);
+  const cashIns = (DB.cash_transactions||[]).filter(t => (t.created_at||'').startsWith(dateStr) && t.type === 'cash_in').reduce((a,t)=>a+(Number(t.amount)||0),0);
+  const cashOuts = (DB.cash_transactions||[]).filter(t => (t.created_at||'').startsWith(dateStr) && t.type === 'cash_out').reduce((a,t)=>a+(Number(t.amount)||0),0);
+  const cashReturns = (DB.returns||[]).filter(r => (r.created_at||'').startsWith(dateStr) && r.refund_method === 'cash').reduce((a,r)=>a+(Number(r.refund_amount)||0),0);
+  return {salesCash,creditCash,cashIns,cashOuts,cashReturns,balance:salesCash+creditCash+cashIns-cashOuts-cashReturns};
+}
+function showCashBalance() {
+  const cs=getCashSummary(); const moves=cashMovementList();
+  openModal('💵 Cashier Balance — Today', `<div class="form-grid">
+    <div class="card" style="background:var(--glass-hover);padding:12px"><div class="row" style="justify-content:space-between"><span>Cash Sales</span><b class="success">+${fmtInt(cs.salesCash)}</b></div><div class="row" style="justify-content:space-between;margin-top:7px"><span>Credit Payments (Cash)</span><b class="success">+${fmtInt(cs.creditCash)}</b></div><div class="row" style="justify-content:space-between;margin-top:7px"><span>Manual Cash In</span><b class="success">+${fmtInt(cs.cashIns)}</b></div><div class="row" style="justify-content:space-between;margin-top:7px"><span>Cash Out</span><b class="warn">-${fmtInt(cs.cashOuts)}</b></div><div class="row" style="justify-content:space-between;margin-top:7px"><span>Cash Refunds</span><b class="danger-c">-${fmtInt(cs.cashReturns)}</b></div><div class="row" style="justify-content:space-between;margin-top:10px;padding-top:10px;border-top:1px solid var(--separator);font-size:17px"><b>Expected Cash</b><b class="success">${fmtInt(cs.balance)}</b></div></div>
+    ${moves.length?`<div><div class="field-label" style="margin-bottom:7px">Manual movements</div><div style="max-height:220px;overflow:auto;background:var(--glass-hover);border-radius:var(--radius-md);padding:5px">${moves.map(t=>`<div class="row" style="justify-content:space-between;padding:8px;border-bottom:1px solid var(--separator)"><div><div class="strong small">${t.type==='cash_out'?'💸':'💵'} ${esc(t.note)}</div><div class="muted small">${esc(t.category||'Other')} · ${esc((t.created_at||'').slice(11,16))}</div></div><b class="${t.type==='cash_out'?'warn':'success'}">${t.type==='cash_out'?'-':'+'}${fmtInt(t.amount)}</b></div>`).join('')}</div></div>`:''}
+  </div><div class="row gap" style="margin-top:12px"><button class="ios-pill orange" style="flex:1" onclick="closeModal();showCashMovement('cash_out')">💸 Cash Out</button><button class="ios-pill green" style="flex:1" onclick="closeModal();showCashMovement('cash_in')">💵 Cash In</button></div>`,()=>{},'Close');
+}
+function showCashMovement(type='cash_out') {
+  const isOut = type === 'cash_out';
+  openModal(isOut ? '💸 Cash Out' : '💵 Cash In', `<div class="form-grid">
+    <div class="credit-notice" style="background:rgba(${isOut?'255,159,10':'48,209,88'},.12);border-color:rgba(${isOut?'255,159,10':'48,209,88'},.45);color:var(--${isOut?'orange':'green'})">${isOut?'Cash taken from cashier drawer.':'Cash received into cashier drawer.'}</div>
+    ${field('Amount', '<input id="cm-amount" class="ios-input" type="number" min="0.01" step="0.01" placeholder="0.00" autofocus>', true)}
+    ${field('Note / Reason', `<input id="cm-note" class="ios-input" placeholder="e.g. Owner cash withdrawal / personal use" maxlength="120">`, true)}
+    ${field('Category', `<select id="cm-category" class="ios-input"><option>Owner</option><option>Expense</option><option>Bank Deposit</option><option>Cash Adjustment</option><option>Other</option></select>`)}
+  </div>`, () => {
+    const amount = Number(document.getElementById('cm-amount').value || 0);
+    const note = document.getElementById('cm-note').value.trim();
+    const category = document.getElementById('cm-category').value;
+    if (!amount || amount <= 0) { toast('Enter valid amount','error'); return false; }
+    if (!note) { toast('Note / reason required','error'); return false; }
+    if (isOut) { const cs = getCashSummary(); if (amount > cs.balance + 0.01) { toast(`Not enough recorded cash. Balance: ${fmtInt(cs.balance)}`,'error'); return false; } }
+    DB.cash_transactions.push({id:nextId('cash_transactions'),type:isOut?'cash_out':'cash_in',amount,note,category,created_at:now(),user_id:currentUser?.id||null});
+    save(); toast(`${isOut?'Cash Out':'Cash In'} ${fmtInt(amount)} recorded`,'success'); render();
+  }, isOut ? '💸 Record Cash Out' : '💵 Record Cash In');
+}
+function cashMovementList(dateStr=today()) { return (DB.cash_transactions||[]).filter(t=>(t.created_at||'').startsWith(dateStr)).sort((a,b)=>b.id-a.id); }
+
+/* ═══════════════════════════════════════════════════════════
+   🆕 DASHBOARD CHART — Interactive Daily / 30D / Monthly / Yearly
+   ═══════════════════════════════════════════════════════════ */
+function buildChartData(range) {
+  const data = [];
+  let title = '', sub = '';
+  if (range === '7d') {
+    const base = new Date(); base.setHours(0,0,0,0);
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(base); d.setDate(base.getDate() - i);
+      const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      const sales = DB.sales.filter(s => (s.created_at||'').startsWith(key));
+      const value = sales.reduce((a,s)=>a+(Number(s.total)||0),0);
+      const profit = sales.reduce((a,s)=>a + (Number(s.total)||0) - (Number(s.cost_total)||0), 0);
+      data.push({ key, label: d.toLocaleDateString('en-US',{weekday:'short'}), fullLabel: d.toLocaleDateString('en-US',{month:'short',day:'numeric'}), value, profit, count: sales.length });
+    }
+    title = 'Last 7 Days'; sub = 'Daily sales breakdown';
+  } else if (range === '30d') {
+    const base = new Date(); base.setHours(0,0,0,0);
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date(base); d.setDate(base.getDate() - i);
+      const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      const sales = DB.sales.filter(s => (s.created_at||'').startsWith(key));
+      const value = sales.reduce((a,s)=>a+(Number(s.total)||0),0);
+      const profit = sales.reduce((a,s)=>a + (Number(s.total)||0) - (Number(s.cost_total)||0), 0);
+      data.push({ key, label: String(d.getDate()), fullLabel: d.toLocaleDateString('en-US',{month:'short',day:'numeric'}), value, profit, count: sales.length });
+    }
+    title = 'Last 30 Days'; sub = 'Daily sales trend';
+  } else if (range === '12m') {
+    const base = new Date(); base.setDate(1); base.setHours(0,0,0,0);
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(base); d.setMonth(base.getMonth() - i);
+      const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+      const sales = DB.sales.filter(s => (s.created_at||'').startsWith(key));
+      const value = sales.reduce((a,s)=>a+(Number(s.total)||0),0);
+      const profit = sales.reduce((a,s)=>a + (Number(s.total)||0) - (Number(s.cost_total)||0), 0);
+      data.push({ key, label: d.toLocaleDateString('en-US',{month:'short'}), fullLabel: d.toLocaleDateString('en-US',{month:'short',year:'numeric'}), value, profit, count: sales.length });
+    }
+    title = 'Last 12 Months'; sub = 'Monthly sales trend';
+  } else if (range === '5y') {
+    const y = new Date().getFullYear();
+    for (let i = 4; i >= 0; i--) {
+      const yr = y - i; const key = String(yr);
+      const sales = DB.sales.filter(s => (s.created_at||'').startsWith(key));
+      const value = sales.reduce((a,s)=>a+(Number(s.total)||0),0);
+      const profit = sales.reduce((a,s)=>a + (Number(s.total)||0) - (Number(s.cost_total)||0), 0);
+      data.push({ key, label: key, fullLabel: key, value, profit, count: sales.length });
+    }
+    title = 'Last 5 Years'; sub = 'Yearly sales overview';
+  }
+  return { data, title, sub };
+}
+
+function dashboardLineChart() {
+  const range = dashChartRange;
+  const { data: days, title, sub } = buildChartData(range);
+
+  const grandTotal = days.reduce((a,x)=>a+x.value, 0);
+  const grandProfit = days.reduce((a,x)=>a+x.profit, 0);
+  const grandCount = days.reduce((a,x)=>a+x.count, 0);
+  const avg = days.length ? grandTotal / days.length : 0;
+  const best = days.reduce((a,b)=> b.value > (a?.value||-1) ? b : a, days[0] || {value:0,fullLabel:'-'});
+  const max = Math.max(1, ...days.map(x=>x.value));
+
+  const n = days.length;
+  const W = 820, H = 280, PL = 60, PR = 24, PT = 34, PB = 44;
+  const iw = W - PL - PR, ih = H - PT - PB;
+  const pts = days.map((x, i) => {
+    const px = PL + (n === 1 ? iw/2 : (iw * (i / (n-1))));
+    const py = PT + ih - (x.value/max) * ih;
+    return { ...x, px, py, isBest: x === best && x.value > 0 };
+  });
+
+  const path = pts.map((p,i)=>`${i?'L':'M'} ${p.px.toFixed(1)} ${p.py.toFixed(1)}`).join(' ');
+  const area = n ? `M ${pts[0].px} ${PT+ih} L ${pts.map(p=>`${p.px.toFixed(1)} ${p.py.toFixed(1)}`).join(' L ')} L ${pts[n-1].px} ${PT+ih} Z` : '';
+
+  // Y axis grid
+  const yLabels = [0, 0.25, 0.5, 0.75, 1].map(f => {
+    const val = max * f;
+    const y = PT + ih - f * ih;
+    return `<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="var(--separator)" stroke-dasharray="3 5" opacity=".6"/><text x="${PL-8}" y="${y+4}" text-anchor="end" fill="var(--text-3)" font-size="10" font-weight="600">${fmtInt(val)}</text>`;
+  }).join('');
+
+  // X labels - sparse
+  const stepX = n <= 7 ? 1 : (n <= 12 ? 1 : Math.ceil(n / 10));
+  const xLabels = pts.map((p, i) => {
+    if (n > 12 && i % stepX !== 0 && i !== n-1) return '';
+    return `<text x="${p.px}" y="${H-16}" text-anchor="middle" fill="var(--text-3)" font-size="10" font-weight="600">${esc(p.label)}</text>`;
+  }).join('');
+
+  // Points + tooltips
+  const points = pts.map((p) => {
+    const color = p.isBest ? 'var(--orange)' : 'var(--blue)';
+    const r = p.isBest ? 6 : 4;
+    const label = p.isBest ? `<text x="${p.px}" y="${p.py-14}" text-anchor="middle" fill="var(--orange)" font-size="10.5" font-weight="800">★ ${fmtInt(p.value)}</text>` : '';
+    return `<g class="chart-point" style="cursor:pointer">
+      <title>${esc(p.fullLabel)}: ${fmtInt(p.value)} (${p.count} sale${p.count!==1?'s':''})</title>
+      <circle cx="${p.px}" cy="${p.py}" r="${r}" fill="${color}" stroke="var(--bg-grad-1)" stroke-width="2"/>
+      ${label}
+    </g>`;
+  }).join('');
+
+  const isBestSet = best && best.value > 0;
+
+  return `<div class="card chart-card" style="margin-bottom:14px">
+    <div class="chart-head">
+      <div>
+        <h3 style="margin-bottom:2px">📈 Sales Trend</h3>
+        <div class="muted small">${esc(title)} · ${esc(sub)}</div>
+      </div>
+      <div class="chart-toggle">
+        <button class="chart-btn ${range==='7d'?'active':''}" onclick="dashSetChartRange('7d')">7D</button>
+        <button class="chart-btn ${range==='30d'?'active':''}" onclick="dashSetChartRange('30d')">30D</button>
+        <button class="chart-btn ${range==='12m'?'active':''}" onclick="dashSetChartRange('12m')">12M</button>
+        <button class="chart-btn ${range==='5y'?'active':''}" onclick="dashSetChartRange('5y')">5Y</button>
+      </div>
+    </div>
+    <div class="chart-stats">
+      <div class="chart-stat"><div class="muted small" style="font-weight:700;text-transform:uppercase;letter-spacing:.05em">Total</div><div class="strong primary-c">${fmtInt(grandTotal)}</div></div>
+      ${canSeeCost() ? `<div class="chart-stat"><div class="muted small" style="font-weight:700;text-transform:uppercase;letter-spacing:.05em">Profit</div><div class="strong success">${fmtInt(grandProfit)}</div></div>` : ''}
+      <div class="chart-stat"><div class="muted small" style="font-weight:700;text-transform:uppercase;letter-spacing:.05em">Sales</div><div class="strong">${grandCount}</div></div>
+      <div class="chart-stat"><div class="muted small" style="font-weight:700;text-transform:uppercase;letter-spacing:.05em">Avg</div><div class="strong">${fmtInt(avg)}</div></div>
+      <div class="chart-stat chart-stat-best"><div class="muted small" style="font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--orange)">⭐ Best</div><div class="strong warn">${fmtInt(isBestSet?best.value:0)}</div><div class="muted small" style="font-size:9.5px;margin-top:1px">${esc(isBestSet?best.fullLabel:'No data')}</div></div>
+    </div>
+    <div class="chart-wrap">
+      <svg viewBox="0 0 ${W} ${H}" width="100%" height="280" role="img" aria-label="Sales trend chart">
+        <defs>
+          <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="var(--blue)" stop-opacity=".38"/>
+            <stop offset="100%" stop-color="var(--blue)" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        ${yLabels}
+        ${area?`<path d="${area}" fill="url(#chartGrad)"></path>`:''}
+        ${path?`<path d="${path}" fill="none" stroke="var(--blue)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path>`:''}
+        ${points}
+        ${xLabels}
+      </svg>
+    </div>
+  </div>`;
+}
+function dashSetChartRange(r) {
+  if (dashChartRange === r) return;
+  dashChartRange = r;
+  renderDashboard(document.getElementById('content'));
+}
 
 /* DASHBOARD */
 let dashQuery = '';
@@ -1018,7 +1260,7 @@ function renderDashboard(root) {
   if (q) { recentSales = recentSales.filter(s => { const c = DB.customers.find(x=>x.id===s.customer_id); return (s.invoice_no||'').toLowerCase().includes(q) || (c?.name||'').toLowerCase().includes(q); }); recentRepairs = recentRepairs.filter(r => { const c = DB.customers.find(x=>x.id===r.customer_id); return (r.job_no||'').toLowerCase().includes(q) || (r.device_brand||'').toLowerCase().includes(q) || (r.device_model||'').toLowerCase().includes(q) || (c?.name||'').toLowerCase().includes(q); }); }
   recentSales = recentSales.slice(0,6); recentRepairs = recentRepairs.slice(0,6);
   root.innerHTML = `<div class="view-shell">
-    <div class="page-head"><div><h1>Dashboard</h1><p>${new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})}</p></div></div>
+    <div class="page-head"><div><h1>Dashboard</h1><p>${new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'})}</p></div><div class="head-actions"><button class="ios-pill orange sm" onclick="showCashMovement('cash_out')">💸 Cash Out</button><button class="ios-pill green sm" onclick="showCashMovement('cash_in')">💵 Cash In</button></div></div>
     <div class="search-row">${searchBar('dash-search','🔍 Search sales, repairs, customers...','dashSearch(this.value)')}</div>
     <div class="view-scroll">
       <div class="stat-grid" style="margin-bottom:14px">
@@ -1035,10 +1277,13 @@ function renderDashboard(root) {
         <div class="stat" onclick="navigateTo('stock')"><div class="stat-icon">📦</div><div class="stat-label">Accessories Qty</div><div class="stat-value">${accQty}</div><div class="stat-sub">${DB.accessories.length} items</div></div>
         <div class="stat" onclick="navigateTo('billsearch')"><div class="stat-icon">🔎</div><div class="stat-label">Bill Search</div><div class="stat-value primary-c">${DB.sales.length}</div><div class="stat-sub">total invoices</div></div>
       </div>
+      ${(()=>{ const cs=getCashSummary(); return `<div class="stat-grid" style="margin-bottom:14px"><div class="stat" onclick="showCashBalance()"><div class="stat-icon">💵</div><div class="stat-label">Cashier Cash</div><div class="stat-value success">${fmtInt(cs.balance)}</div><div class="stat-sub">recorded cash balance today</div></div><div class="stat"><div class="stat-icon">💸</div><div class="stat-label">Cash Out Today</div><div class="stat-value warn">${fmtInt(cs.cashOuts)}</div><div class="stat-sub">${cashMovementList().length} cash movement${cashMovementList().length!==1?'s':''}</div></div></div>`; })()}
+      ${dashboardLineChart()}
       ${(totalCredit > 0 || totalShopOutstanding > 0) ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px" class="dash-2col">
         ${totalCredit > 0 ? `<div class="card" style="border-color:rgba(255,159,10,.5);cursor:pointer" onclick="navigateTo('customers')"><h3>💳 Customer Credit <span style="float:right;color:var(--blue);font-size:12px">View all ›</span></h3><ul class="list">${DB.customers.filter(c=>(Number(c.balance)||0) > 0).sort((a,b)=>b.balance-a.balance).slice(0,6).map(c=>`<li onclick="event.stopPropagation();recordCreditPayment(${c.id})" style="cursor:pointer"><div class="l-info"><div class="strong">${esc(c.name)}</div><div class="muted small">${esc(c.phone||'-')}</div></div><div class="row gap"><span class="danger-c strong">${fmtInt(c.balance)}</span><button class="ios-pill orange sm">Pay</button></div></li>`).join('')}</ul></div>` : ''}
         ${totalShopOutstanding > 0 ? `<div class="card" style="border-color:rgba(255,69,58,.5);cursor:pointer" onclick="navigateTo('shoprepair')"><h3>🏪 Shop Outstanding <span style="float:right;color:var(--blue);font-size:12px">View all ›</span></h3><ul class="list">${DB.shops.filter(s=>calcShopOutstanding(s) > 0.5).sort((a,b)=>calcShopOutstanding(b)-calcShopOutstanding(a)).slice(0,6).map(s=>`<li><div class="l-info"><div class="strong">${esc(s.name)}</div><div class="muted small">${esc(s.phone||'-')}</div></div><div class="row gap"><span class="danger-c strong">${fmtInt(calcShopOutstanding(s))}</span></div></li>`).join('')}</ul></div>` : ''}
       </div>` : ''}
+      <div class="card" style="margin-bottom:14px"><div class="row" style="justify-content:space-between;margin-bottom:8px"><h3>💵 Today's Cash Movements</h3><span class="muted small">Cashier: ${esc(currentUser?.name||'')}</span></div>${cashMovementList().length ? `<ul class="list">${cashMovementList().slice(0,8).map(t=>`<li><div class="l-info"><div class="strong">${t.type==='cash_out'?'💸 Cash Out':'💵 Cash In'} · ${esc(t.note)}</div><div class="muted small">${esc(t.category||'Other')} · ${esc((t.created_at||'').slice(11,16))}</div></div><div class="${t.type==='cash_out'?'warn':'success'} strong">${t.type==='cash_out'?'-':'+'}${fmtInt(t.amount)}</div></li>`).join('')}</ul>` : '<p class="muted center pad small">No manual cash movements today</p>'}</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px" class="dash-2col">
         <div class="card" style="cursor:pointer" onclick="navigateTo('reports')"><h3>Recent Sales <span style="float:right;color:var(--blue);font-size:12px">View all ›</span></h3>${recentSales.length ? `<ul class="list">${recentSales.map(s=>{ const c = DB.customers.find(x=>x.id===s.customer_id); const rt = getSaleReturnTotal(s.id); return `<li><div class="l-info"><div class="strong">${esc(s.invoice_no)}${rt>0?' <span class="danger-c small">↩</span>':''}</div><div class="muted small">${esc(c?.name||'Walk-in')}${s.balance>0?` · <span class="warn">bal ${fmtInt(s.balance)}</span>`:''}</div></div><div class="success strong">${fmtInt(s.total)}</div></li>`; }).join('')}</ul>` : '<p class="muted pad center">No sales yet</p>'}</div>
         <div class="card" style="cursor:pointer" onclick="navigateTo('repairs')"><h3>Recent Repairs <span style="float:right;color:var(--blue);font-size:12px">View all ›</span></h3>${recentRepairs.length ? `<ul class="list">${recentRepairs.map(r=>{ const c = DB.customers.find(x=>x.id===r.customer_id); return `<li><div class="l-info"><div class="strong">${esc(r.device_brand)} ${esc(r.device_model)}</div><div class="muted small">${esc(r.job_no)} · ${esc(c?.name||'-')}</div></div><span class="badge badge-${r.status}">${r.status.replace(/_/g,' ')}</span></li>`; }).join('')}</ul>` : '<p class="muted pad center">No repairs yet</p>'}</div>
@@ -1245,7 +1490,6 @@ function completeSale() {
   const method = document.getElementById('payment').value;
   const preName = document.getElementById('cust-name').value.trim();
   const prePhone = document.getElementById('cust-phone').value.trim();
-
   if (balance > 0.01) {
     const existing = prePhone ? DB.customers.find(c => (c.phone||'').trim() === prePhone) : null;
     const fName = preName || (existing?.name || '');
@@ -2078,57 +2322,38 @@ function renderSettingsBody() {
     if (q) users = users.filter(u => (u.username||'').toLowerCase().includes(q) || (u.name||'').toLowerCase().includes(q) || (u.role||'').toLowerCase().includes(q));
     body.innerHTML = `<div class="card" style="margin-bottom:14px"><div class="row" style="justify-content:space-between;margin-bottom:12px"><h3 style="margin:0">Users</h3><button class="ios-pill blue sm" onclick="showAddUser()">+ Add</button></div>${users.length ? `<div class="ios-table-wrap"><table class="ios-table"><thead><tr><th>#</th><th>Photo</th><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${users.map(u => { const im = u.id===currentUser.id; const av = u.photo ? `<img src="${u.photo}" style="width:32px;height:32px;border-radius:50%;object-fit:cover">` : `<div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px">${esc((u.name||u.username).charAt(0).toUpperCase())}</div>`; return `<tr><td class="muted">${u.id}</td><td>${av}</td><td class="strong">${esc(u.username)}${im?' <span class="muted small">(you)</span>':''}</td><td>${esc(u.name)}</td><td><span class="badge badge-${u.role}">${esc(u.role)}</span></td><td>${u.active ? '<span class="success">Active</span>' : '<span class="danger-c">Disabled</span>'}</td><td style="display:flex;gap:4px;flex-wrap:wrap"><button class="ios-pill sm" onclick="showEditUser(${u.id})">Edit</button><button class="ios-pill sm" onclick="showChangePassword(${u.id})">Pass</button>${!im ? `<button class="ios-pill sm" onclick="toggleUserActive(${u.id})">${u.active?'Dis':'En'}</button>` : ''}${!im ? `<button class="ios-pill red sm" onclick="deleteUser(${u.id})">Del</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<p class="muted center pad">No users</p>'}</div>`;
   } else {
-    body.innerHTML = `<div class="card" style="max-width:600px;margin-bottom:14px;border-color:rgba(48,209,88,.4)"><h3>🔥 Firebase</h3><div style="padding:12px;background:rgba(48,209,88,.08);border-radius:var(--radius-md);margin-bottom:12px"><div class="strong success" style="margin-bottom:4px">${fbConnected ? '✓ Connected' : '⚠ Offline'}</div><div class="muted small">Project: <b>${esc(firebaseConfig.projectId)}</b></div><div class="muted small">Version: <b>${POS_VERSION}</b></div></div><div class="row gap" style="flex-wrap:wrap"><button class="ios-pill green" onclick="manualSync()">🔄 Force Sync</button><button class="ios-pill" onclick="reloadFromServer()">📥 Reload</button></div></div><div class="card" style="max-width:600px;margin-bottom:14px"><h3>🛡️ Safety Backup</h3><p class="muted small" style="margin-bottom:12px">Local backup — Firebase fail වුනොත් data restore කරනවා</p><button class="ios-pill" onclick="restoreFromSafety()">♻️ Restore from safety backup</button></div><div class="card" style="max-width:600px;margin-bottom:14px"><h3>📤 Backup</h3><div class="row gap" style="flex-wrap:wrap"><button class="ios-pill" onclick="exportJSON()">⬇ Download JSON</button><button class="ios-pill" onclick="importJSON()">⬆ Import JSON</button></div></div><div class="card danger-zone-card" style="max-width:600px"><h3>🗑 DANGER ZONE</h3><p class="danger-text" style="font-size:12px;margin-bottom:14px;font-weight:600">⚠️ <b>PERMANENT</b> — Firebase + ALL devices cache</p><button class="ios-pill red" onclick="resetData()">🗑 DELETE ALL DATA + CACHE</button></div>`;
+    body.innerHTML = `<div class="card" style="max-width:600px;margin-bottom:14px;border-color:rgba(48,209,88,.4)"><h3>🔥 Firebase</h3><div style="padding:12px;background:rgba(48,209,88,.08);border-radius:var(--radius-md);margin-bottom:12px"><div class="strong success" style="margin-bottom:4px">${fbConnected ? '✓ Connected' : '⚠ Offline'}${hasPendingChanges()?` · <span class="warn">Pending sync (${getPendingAge()}s)</span>`:''}</div><div class="muted small">Project: <b>${esc(firebaseConfig.projectId)}</b></div><div class="muted small">Version: <b>${POS_VERSION}</b></div>${hasPendingChanges()?`<div class="muted small" style="margin-top:4px">Last sync: <b>${getLastSyncTs()?new Date(getLastSyncTs()).toLocaleString():'never'}</b></div>`:''}</div><div class="row gap" style="flex-wrap:wrap"><button class="ios-pill green" onclick="manualSync()">🔄 Force Sync${hasPendingChanges()?' ⏳':''}</button><button class="ios-pill" onclick="reloadFromServer()">📥 Reload</button></div></div><div class="card" style="max-width:600px;margin-bottom:14px"><h3>🛡️ Safety Backup</h3><p class="muted small" style="margin-bottom:12px">Local backup — Firebase fail වුනොත් data restore කරනවා</p><button class="ios-pill" onclick="restoreFromSafety()">♻️ Restore from safety backup</button></div><div class="card" style="max-width:600px;margin-bottom:14px"><h3>📤 Backup</h3><div class="row gap" style="flex-wrap:wrap"><button class="ios-pill" onclick="exportJSON()">⬇ Download JSON</button><button class="ios-pill" onclick="importJSON()">⬆ Import JSON</button></div></div><div class="card danger-zone-card" style="max-width:600px"><h3>🗑 DANGER ZONE</h3><p class="danger-text" style="font-size:12px;margin-bottom:14px;font-weight:600">⚠️ <b>PERMANENT</b> — Firebase + ALL devices cache</p><button class="ios-pill red" onclick="resetData()">🗑 DELETE ALL DATA + CACHE</button></div>`;
   }
 }
 function restoreFromSafety() { const b = loadSafetyBackup(); if (!isDBValid(b)) { toast('No valid backup found','error'); return; } if (!confirm('Restore from safety backup?')) return; DB = b; migrateDB(); saveToServer(true); toast('♻️ Restored from backup','success'); setTimeout(()=>location.reload(), 800); }
 async function reloadFromServer() { if (!confirm('Reload from Firebase?')) return; const r = await loadFromServer(); if (r.ok) { applyTheme(DB.settings.theme||'dark'); applyLogo(); render(); toast('Reloaded','success'); } else toast('Failed: ' + r.error, 'error'); }
 function saveSettings() { DB.settings.shop_name = document.getElementById('s-name').value.trim() || 'PHONE HUB'; DB.settings.shop_address = document.getElementById('s-addr').value.trim(); DB.settings.shop_phone = document.getElementById('s-phone').value.trim(); DB.settings.currency = document.getElementById('s-cur').value.trim() || 'LKR'; DB.settings.low_stock = Number(document.getElementById('s-low').value || 2); DB.settings.print_size = document.getElementById('s-print').value || '58mm'; save(); toast('Settings saved','success'); document.getElementById('side-shop-name').textContent = DB.settings.shop_name; }
 
-/* ═══════════════════════════════════════════════════════════
-   🆕 RESET — NOW CLEARS ALL CACHES ON ALL DEVICES
-   ═══════════════════════════════════════════════════════════ */
 async function resetData() {
   const ok = await requireDangerConfirm('DELETE ALL DATA + ALL DEVICE CACHES',
     'This will permanently erase: Firebase data, this device\'s cache, AND every logged-in device\'s cache. All devices will be force-reloaded.',
     { warnings: 3, password: true, adminRole: true });
   if (!ok) return;
-
   syncing = true;
   const icon = document.getElementById('sync-icon');
   if (icon) icon.classList.add('spinning');
   updateStorageStatus('saving');
   toast('🗑 Clearing data...', 'info', 3000);
-
   try {
-    // 1. Fresh DB in memory
     DB = createFreshDB();
     migrateDB();
-
-    // 2. Push fresh (empty) DB to Firebase
     DB._lastSaved = Date.now();
     await fbRef.set(DB);
-
-    // 3. Generate new reset token → broadcasts to ALL devices
     const newToken = 'reset-' + Date.now() + '-' + Math.random().toString(36).slice(2,10);
     await fbResetRef.set(newToken);
-
-    // 4. Verify Firebase is empty
     await new Promise(r => setTimeout(r, 400));
     const snap = await fbRef.once('value');
     const remote = snap.val();
     if (!isDBValid(remote)) throw new Error('Firebase write failed');
-
-    // 5. WIPE this device completely
     await wipeAllCaches();
-
-    // 6. Store token so we don't reload again
-    try { localStorage.setItem(LS_RESET_TOKEN_KEY, newToken); } catch(e) {}
-
-    // 7. Show blank screen + reload
+    try { localStorage.setItem(LS_RESET_TOKEN_KEY, newToken); localStorage.removeItem(LS_PENDING_KEY); } catch(e) {}
     document.body.innerHTML = `<div style="position:fixed;inset:0;background:#0a0a0f;color:#fff;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:20px;z-index:99999;font-family:system-ui"><div style="font-size:64px">✅</div><h1 style="font-size:22px;margin:0">All Data Cleared</h1><p style="color:#888;max-width:340px;text-align:center;font-size:13px;line-height:1.6">Firebase + all device caches cleared. Reloading...</p></div>`;
     setTimeout(() => location.reload(), 1800);
-
   } catch(e) {
     console.error('Reset failed:', e);
     syncing = false;
@@ -2181,7 +2406,6 @@ document.addEventListener('mousedown', (e) => {
 
 /* INIT */
 (async function init() {
-  // 🆕 Check reset token BEFORE loading
   try {
     const snap = await fbResetRef.once('value');
     const remoteToken = snap.val();
@@ -2217,9 +2441,12 @@ document.addEventListener('mousedown', (e) => {
   startRealtimeSync();
   startResetListener();
   const vc = document.getElementById('version-chip'); if (vc) vc.textContent = POS_VERSION;
+  if (hasPendingChanges()) updateStorageStatus('offline-pending');
 })();
 document.getElementById('login-pass').addEventListener('keypress', e => { if (e.key==='Enter') doLogin(); });
-window.addEventListener('beforeunload', () => { if (writeTimer) { clearTimeout(writeTimer); try { if (isDBValid(DB)) fbRef.set(DB); } catch(e) {} } });
+window.addEventListener('beforeunload', () => {
+  if (writeTimer) { clearTimeout(writeTimer); try { if (isDBValid(DB)) { cacheLocal(); saveSafetyBackup(); fbRef.set(DB); setLastSyncTs(Date.now()); clearPending(); } } catch(e) { markPending(); } }
+});
 </script>
 </body>
 </html>
