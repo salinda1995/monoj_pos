@@ -239,6 +239,15 @@ select.ios-input{cursor:pointer;appearance:none;background-image:url("data:image
 @keyframes tipIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 .chart-point:hover circle{stroke-width:3;filter:drop-shadow(0 0 10px currentColor)}
 
+.bl{box-sizing:border-box;padding:.8mm 1.2mm;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;overflow:hidden;background:#fff;color:#000;line-height:1.15;flex:none}
+.bl,.bl *{font-family:Arial,Helvetica,sans-serif!important;letter-spacing:0!important;color:#000}
+.bl-prev{outline:1px dashed #bbb}
+.bl-shop{font-weight:800;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.bl-bar{display:flex;justify-content:center;width:100%;margin:.3mm 0}
+.bl-num{font-family:'Courier New',monospace!important;white-space:nowrap}
+.bl-name{overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;max-width:100%;font-weight:600;word-break:break-word}
+.bl-price{font-weight:800}
+
 @media print{
   body *{visibility:hidden}
   #receipt,#receipt *{visibility:visible}
@@ -787,6 +796,135 @@ function createFreshDB() {
 function initUsers(d) { d.users = [{id:1,username:'admin',password:hashPassword('admin123'),name:'Administrator',role:'admin',active:true,photo:null,created_at:now()},{id:2,username:'cashier',password:hashPassword('cashier123'),name:'Cashier',role:'cashier',active:true,photo:null,created_at:now()}]; d.ids.users = 3; }
 function makeProductCode(id){ return 'PHN-' + String(id).padStart(4,'0'); }
 function makeAccessoryCode(id){ return 'ACC-' + String(id).padStart(4,'0'); }
+/* ===== BARCODE: auto generate + label print ===== */
+const C128_PAT=["212222","222122","222221","121223","121322","131222","122213","122312","132212","221213","221312","231212","112232","122132","122231","113222","123122","123221","223211","221132","221231","213212","223112","312131","311222","321122","321221","312212","322112","322211","212123","212321","232121","111323","131123","131321","112313","132113","132311","211313","231113","231311","112133","112331","132131","113123","113321","133121","313121","211331","231131","213113","213311","213131","311123","311321","331121","312113","312311","332111","314111","221411","431111","111224","111422","121124","121421","141122","141221","112214","112412","122114","122411","142112","142211","241211","221114","413111","241112","134111","111242","121142","121241","114212","124112","124211","411212","421112","421211","212141","214121","412121","111143","111341","131141","114113","114311","411113","411311","113141","114131","311141","411131","211412","211214","211232","2331112"];
+function code128Bars(text){
+  text = String(text); const codes = [];
+  if (/^\d+$/.test(text) && text.length % 2 === 0) { codes.push(105); for (let i = 0; i < text.length; i += 2) codes.push(parseInt(text.substr(i,2),10)); }
+  else { codes.push(104); for (const ch of text) { const c = ch.charCodeAt(0) - 32; codes.push(c >= 0 && c <= 95 ? c : 0); } }
+  let sum = codes[0]; for (let i = 1; i < codes.length; i++) sum += codes[i] * i;
+  codes.push(sum % 103); codes.push(106);
+  const bars = []; codes.forEach(c => { const p = C128_PAT[c]; for (let i = 0; i < p.length; i++) bars.push(+p[i]); });
+  return bars;
+}
+function code128Modules(text){ return code128Bars(text).reduce((a,b)=>a+b,0) + 20; }
+function code128SVG(text, wMm, hMm){
+  const bars = code128Bars(text), total = bars.reduce((a,b)=>a+b,0) + 20; let x = 10, r = '';
+  bars.forEach((w,i) => { if (i % 2 === 0) r += `<rect x="${x}" y="0" width="${w}" height="10"/>`; x += w; });
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${total} 10" preserveAspectRatio="none" shape-rendering="crispEdges" style="width:${wMm}mm;height:${hMm}mm;display:block"><rect width="${total}" height="10" fill="#fff"/><g fill="#000">${r}</g></svg>`;
+}
+function barcodeInUse(v){ return DB.products.some(p => p.barcode === v) || DB.accessories.some(a => a.barcode === v) || DB.stock_units.some(u => u.barcode === v); }
+function makeBarcode(type, id){ let n = Number(id) || 1, v = ''; for (let i = 0; i < 50; i++) { v = '88' + type + String(n).padStart(7,'0').slice(-7); if (!barcodeInUse(v)) return v; n += 1000003; } return v; }
+
+const BC_PAPERS = {
+  label:{n:'Label roll (paper = label size)'}, r58:{n:'58mm thermal roll', w:58}, r80:{n:'80mm thermal roll', w:80},
+  a4:{n:'A4 sheet', w:210, h:297, css:'A4'}, a5:{n:'A5 sheet', w:148, h:210, css:'A5'}, a6:{n:'A6 sheet', w:105, h:148, css:'A6'},
+  letter:{n:'Letter sheet', w:216, h:279, css:'letter'}, custom:{n:'Custom paper size'}
+};
+const BC_PRESETS = ['50x30','40x30','40x25','38x25','30x20','58x40','70x40','100x50'];
+let bcItem = null;
+
+function bcPrefs(){ return Object.assign({ paper:'label', lw:50, lh:30, cw:210, ch:297, shop:true, name:true, price:true, num:true }, (DB.settings && DB.settings.barcode_prefs) || {}); }
+function bcResolve(type, id){
+  if (type === 'product') { const p = DB.products.find(x => x.id === id); if (!p) return null; if (!p.barcode) { p.barcode = makeBarcode(1, p.id); save(); } return { value:p.barcode, name:[p.brand,p.model,p.storage,p.color].filter(Boolean).join(' '), price:Number(p.sale_price)||0, title:p.code }; }
+  if (type === 'unit') { const u = DB.stock_units.find(x => x.id === id); if (!u) return null; const p = DB.products.find(x => x.id === u.product_id) || {}; if (p.id && !p.barcode) { p.barcode = makeBarcode(1, p.id); save(); } return { value:u.barcode || p.barcode, name:[p.brand,p.model,p.storage,p.color].filter(Boolean).join(' '), price:Number(u.sale_price || p.sale_price)||0, title:(p.code||'') + (u.imei ? ' · ' + u.imei : '') }; }
+  const a = DB.accessories.find(x => x.id === id); if (!a) return null; if (!a.barcode) { a.barcode = makeBarcode(2, a.id); save(); }
+  return { value:a.barcode, name:a.name, price:Number(a.sale_price)||0, title:a.code };
+}
+function bcLayout(p){
+  let lw = Math.max(10, Number(p.lw) || 50), lh = Math.max(8, Number(p.lh) || 30), mode, pw, ph, margin = 0, cols = 1, rows = 1, scaled = false;
+  const pp = BC_PAPERS[p.paper] || BC_PAPERS.label;
+  if (p.paper === 'label') { mode = 'roll'; pw = lw; ph = lh; }
+  else if (p.paper === 'r58' || p.paper === 'r80' || (p.paper === 'custom' && !(Number(p.ch) > 0))) {
+    mode = 'roll'; pw = p.paper === 'custom' ? Math.max(20, Number(p.cw) || 58) : pp.w; const uw = pw - 2;
+    if (lw > uw) { const s = uw / lw; lw = lw * s; lh = lh * s; scaled = true; } ph = lh;
+  } else {
+    mode = 'sheet'; margin = 5;
+    pw = p.paper === 'custom' ? Math.max(30, Number(p.cw) || 210) : pp.w; ph = p.paper === 'custom' ? Math.max(30, Number(p.ch) || 297) : pp.h;
+    const uw = pw - 2*margin, uh = ph - 2*margin, s = Math.min(1, uw / lw, uh / lh);
+    if (s < 1) { lw *= s; lh *= s; scaled = true; }
+    const gap = 2; cols = Math.max(1, Math.floor((uw + gap) / (lw + gap))); rows = Math.max(1, Math.floor((uh + gap) / (lh + gap)));
+  }
+  lw = Math.floor(lw * 10) / 10; lh = Math.floor(lh * 10) / 10;
+  return { mode, pw, ph:Math.round(ph*10)/10, lw, lh, margin, cols, rows, perPage:cols*rows, scaled, css:pp.css || null };
+}
+function bcLabelHTML(item, lw, lh, p, preview){
+  const fs = Math.max(1.7, Math.min(3.4, lh * 0.1)), nl = lh >= 35 ? 2 : 1, pad = 1.2;
+  const shop = (DB.settings.shop_name || '').trim();
+  let txt = 0; const parts = [];
+  if (p.shop && shop) { parts.push(`<div class="bl-shop" style="font-size:${(fs*1.05).toFixed(2)}mm">${esc(shop)}</div>`); txt += fs*1.05*1.2; }
+  const mods = code128Modules(item.value), availW = lw - 2*pad, dot = 0.125;
+  let k = Math.floor(availW / (mods * dot)); if (k < 1) k = 1;
+  const svgW = Math.min(availW, +(mods * k * dot).toFixed(3));
+  const tail = [];
+  if (p.num) { tail.push(`<div class="bl-num" style="font-size:${(fs*0.95).toFixed(2)}mm">${esc(item.value)}</div>`); txt += fs*0.95*1.2; }
+  if (p.name) { tail.push(`<div class="bl-name" style="font-size:${fs.toFixed(2)}mm;-webkit-line-clamp:${nl}">${esc(item.name)}</div>`); txt += nl*fs*1.2; }
+  if (p.price) { tail.push(`<div class="bl-price" style="font-size:${(fs*1.1).toFixed(2)}mm">${esc(DB.settings.currency||'')} ${fmtInt(item.price)}</div>`); txt += fs*1.1*1.2; }
+  const barH = Math.max(5, +(lh - 1.6 - txt - 1.0).toFixed(1));
+  return `<div class="bl ${preview?'bl-prev':''}" style="width:${lw}mm;height:${lh}mm">${parts.join('')}<div class="bl-bar">${code128SVG(item.value, svgW, barH)}</div>${tail.join('')}</div>`;
+}
+function bcRead(){
+  const g = id => document.getElementById(id);
+  return { paper:g('bc-paper').value, lw:Number(g('bc-lw').value), lh:Number(g('bc-lh').value), cw:Number(g('bc-cw').value), ch:Number(g('bc-ch').value), qty:Math.floor(Number(g('bc-qty').value) || 0), shop:g('bc-shop').checked, name:g('bc-name').checked, price:g('bc-price').checked, num:g('bc-num').checked };
+}
+function bcPreset(){
+  const v = document.getElementById('bc-preset').value; if (v === 'custom') return;
+  const [w,h] = v.split('x'); document.getElementById('bc-lw').value = w; document.getElementById('bc-lh').value = h; bcRefresh();
+}
+function bcRefresh(){
+  if (!bcItem || !document.getElementById('bc-preview')) return;
+  const p = bcRead(), L = bcLayout(p);
+  const key = Math.round(p.lw) + 'x' + Math.round(p.lh), ps = document.getElementById('bc-preset'); ps.value = BC_PRESETS.includes(key) && p.lw === Math.round(p.lw) && p.lh === Math.round(p.lh) ? key : 'custom';
+  document.getElementById('bc-custom-row').style.display = p.paper === 'custom' ? 'grid' : 'none';
+  document.getElementById('bc-preview').innerHTML = bcLabelHTML(bcItem, L.lw, L.lh, p, true);
+  const qty = Math.max(1, p.qty || 1); let info = '';
+  if (L.mode === 'sheet') { const pages = Math.ceil(qty / L.perPage); info = `📄 ${L.cols} per row × ${L.rows} rows = <b>${L.perPage} labels / page</b> → ${qty} label${qty>1?'s':''} = <b>${pages} page${pages>1?'s':''}</b>`; }
+  else info = `🧻 Roll ${L.pw}mm · each label prints on its own ${L.pw} × ${L.ph}mm slip · <b>${qty} label${qty>1?'s':''}</b>`;
+  if (L.scaled) info += `<br>⚠️ Label was bigger than the paper — auto-fitted to <b>${L.lw} × ${L.lh}mm</b>`;
+  if (L.lw < 25 || L.lh < 15) info += `<br>⚠️ Very small label — barcode may be hard to scan`;
+  document.getElementById('bc-info').innerHTML = info;
+}
+function openBarcodePrint(type, id){
+  const item = bcResolve(type, id); if (!item) { toast('Item not found','error'); return; }
+  bcItem = item; const pr = bcPrefs(), key = Math.round(pr.lw) + 'x' + Math.round(pr.lh);
+  const paperOpts = Object.keys(BC_PAPERS).map(k => `<option value="${k}" ${pr.paper===k?'selected':''}>${esc(BC_PAPERS[k].n)}</option>`).join('');
+  const presetOpts = BC_PRESETS.map(k => `<option value="${k}" ${key===k?'selected':''}>${k.replace('x',' × ')} mm</option>`).join('') + `<option value="custom" ${BC_PRESETS.includes(key)?'':'selected'}>Custom</option>`;
+  const cb = (id, label, on) => `<label style="display:flex;gap:6px;align-items:center;cursor:pointer;font-size:12px"><input type="checkbox" id="${id}" ${on?'checked':''} onchange="bcRefresh()"> ${label}</label>`;
+  openModal(`🏷️ Print Barcode — ${item.title}`, `
+    <div style="background:#fff;border-radius:12px;padding:12px;display:flex;justify-content:center;overflow:auto;margin-bottom:10px"><div id="bc-preview"></div></div>
+    <div id="bc-info" class="field-hint" style="margin-bottom:12px;line-height:1.6"></div>
+    <div class="form-grid">
+      ${field('Quantity (how many labels)', `<input id="bc-qty" class="ios-input" type="number" min="1" max="500" value="1" oninput="bcRefresh()">`, true)}
+      ${field('Print paper', `<select id="bc-paper" class="ios-input" onchange="bcRefresh()">${paperOpts}</select>`)}
+      <div id="bc-custom-row" style="display:none;grid-template-columns:1fr 1fr;gap:10px">${field('Paper width (mm)', `<input id="bc-cw" class="ios-input" type="number" min="20" value="${pr.cw}" oninput="bcRefresh()">`)}${field('Paper height (mm)', `<input id="bc-ch" class="ios-input" type="number" min="0" value="${pr.ch}" oninput="bcRefresh()">`, false, '0 = continuous roll')}</div>
+      ${field('Barcode size', `<select id="bc-preset" class="ios-input" onchange="bcPreset()">${presetOpts}</select>`)}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${field('Width (mm)', `<input id="bc-lw" class="ios-input" type="number" min="10" step="1" value="${pr.lw}" oninput="bcRefresh()">`)}${field('Height (mm)', `<input id="bc-lh" class="ios-input" type="number" min="8" step="1" value="${pr.lh}" oninput="bcRefresh()">`)}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">${cb('bc-shop','Shop name',pr.shop)}${cb('bc-name','Item name',pr.name)}${cb('bc-price','Price',pr.price)}${cb('bc-num','Barcode number',pr.num)}</div>
+    </div>`, () => { bcPrint(); return false; }, '🖨️ Print');
+  bcRefresh();
+}
+function bcPrint(){
+  const p = bcRead(); if (!bcItem) return;
+  if (!(p.qty >= 1) || p.qty > 500) { toast('Quantity must be 1 – 500','error'); return; }
+  if (p.lw < 10 || p.lh < 8) { toast('Label size too small','error'); return; }
+  DB.settings.barcode_prefs = { paper:p.paper, lw:p.lw, lh:p.lh, cw:p.cw, ch:p.ch, shop:p.shop, name:p.name, price:p.price, num:p.num }; save();
+  const L = bcLayout(p), one = bcLabelHTML(bcItem, L.lw, L.lh, p, false); let html, css;
+  const base = `@media print{html body>*:not(#receipt){display:none!important}html,body{height:auto!important;overflow:visible!important;margin:0!important;background:#fff!important}html body #receipt{display:block!important;position:static!important;padding:0!important;margin:0!important;background:#fff!important;color:#000!important}`;
+  if (L.mode === 'roll') {
+    html = Array.from({length:p.qty}, () => `<div class="bl-page">${one}</div>`).join('');
+    css = `${base}@page{size:${L.pw}mm ${L.ph}mm;margin:0}html,body,html body #receipt{width:${L.pw}mm!important}.bl-page{width:${L.pw}mm;height:${(L.ph-0.2).toFixed(1)}mm;display:flex;align-items:center;justify-content:center;overflow:hidden;page-break-after:always;break-after:page}.bl-page:last-child{page-break-after:auto;break-after:auto}}`;
+  } else {
+    html = `<div class="bl-sheet">${one.repeat(p.qty)}</div>`;
+    css = `${base}@page{size:${L.css || (L.pw + 'mm ' + L.ph + 'mm')};margin:${L.margin}mm}.bl-sheet{display:flex;flex-wrap:wrap;gap:2mm;align-content:flex-start}.bl{break-inside:avoid;page-break-inside:avoid}}`;
+  }
+  let st = document.getElementById('barcode-print-style'); if (!st) { st = document.createElement('style'); st.id = 'barcode-print-style'; document.head.appendChild(st); }
+  st.textContent = css;
+  const r = document.getElementById('receipt'); r.innerHTML = html; r.dataset.bc = '1';
+  setTimeout(() => window.print(), 150);
+}
+function bcCleanup(){ const s = document.getElementById('barcode-print-style'); if (s) s.remove(); const r = document.getElementById('receipt'); if (r && r.dataset.bc) { r.innerHTML = ''; delete r.dataset.bc; } }
+window.addEventListener('afterprint', bcCleanup);
+
 
 function migrateDB() {
   if (!DB.settings) DB.settings = {...DEFAULT_SETTINGS};
@@ -799,6 +937,8 @@ function migrateDB() {
   DB.products.forEach(p => { if (!p.code) p.code = makeProductCode(p.id); });
   DB.accessories.forEach(a => { if (!a.code) a.code = makeAccessoryCode(a.id); if (a.warranty_months === undefined) a.warranty_months = 0; if (a.barcode === undefined) a.barcode = ''; });
   DB.stock_units.forEach(u => { if (u.barcode === undefined) u.barcode = ''; });
+  DB.products.forEach(p => { if (!p.barcode) p.barcode = makeBarcode(1, p.id); });
+  DB.accessories.forEach(a => { if (!a.barcode) a.barcode = makeBarcode(2, a.id); });
   DB.customers.forEach(c => { if (c.balance === undefined) c.balance = 0; if (c.id_number === undefined) c.id_number = ''; });
   DB.returns.forEach(r => { if (r.condition === undefined) r.condition = 'damaged'; if (r.restocked === undefined) r.restocked = false; if (r.original_amount === undefined) r.original_amount = (Number(r.unit_price)||0) * (r.qty||0); });
   DB.sale_items.forEach(it => { if (!it.item_type) { if (it.stock_unit_id) it.item_type = 'phone'; else if (it.accessory_id) it.item_type = 'accessory'; else if ((it.item_code||'').startsWith('ACC-')) it.item_type = 'accessory'; else it.item_type = 'phone'; } if (it.accessory_id === undefined) it.accessory_id = null; if (it.stock_unit_id === undefined) it.stock_unit_id = null; if (it.barcode === undefined) it.barcode = ''; });
@@ -1656,6 +1796,7 @@ function salesSearch(v) {
   if (!q) { res.innerHTML = '<p class="muted center pad small">Start typing to search items...</p>'; return; }
   if (salesTab === 'accessories') { const bm = DB.accessories.find(a => (a.barcode||'').toLowerCase() === q); if (bm) { addAccessoryToCart(bm.id); const inp = document.getElementById('sales-search-input'); if (inp) inp.value = ''; res.innerHTML = '<p class="muted center pad small">✅ Barcode item added</p>'; return; } }
   else { const bm = DB.stock_units.find(u => (u.barcode||'').toLowerCase() === q && u.status === 'in_stock'); if (bm) { addPhoneToCart(bm.id); const inp = document.getElementById('sales-search-input'); if (inp) inp.value = ''; res.innerHTML = '<p class="muted center pad small">✅ Barcode item added</p>'; return; } }
+  if (salesTab !== 'accessories') { const pm = DB.products.find(p => (p.barcode||'') === q); if (pm) { const un = DB.stock_units.find(u => u.product_id === pm.id && u.status === 'in_stock' && !cart.some(c => c.type==='phone' && c.unit_id === u.id)); const inp = document.getElementById('sales-search-input'); if (un) { addPhoneToCart(un.id); if (inp) inp.value = ''; res.innerHTML = '<p class="muted center pad small">✅ Barcode item added</p>'; } else res.innerHTML = '<p class="muted center pad small">⚠️ No more stock for this product</p>'; return; } }
   if (salesTab === 'phones') {
     const items = DB.stock_units.filter(u => u.status === 'in_stock').map(u => { const p = DB.products.find(x => x.id === u.product_id) || {}; return { unit_id: u.id, code: p.code || '', brand: p.brand || '', model: p.model || '', storage: p.storage || '', color: p.color || '', imei: u.imei || '', barcode: u.barcode || '', price: Number(u.sale_price) || 0, cost: Number(u.cost_price) || 0, warranty: u.warranty_months || 0 }; }).filter(u => (u.imei||'').toLowerCase().includes(q) || (u.code||'').toLowerCase().includes(q) || (u.brand||'').toLowerCase().includes(q) || (u.model||'').toLowerCase().includes(q) || (u.color||'').toLowerCase().includes(q) || (u.storage||'').toLowerCase().includes(q) || (u.barcode||'').toLowerCase().includes(q));
     if (!items.length) res.innerHTML = '<p class="muted center pad small">No matching phones</p>';
@@ -1916,18 +2057,18 @@ function renderPhoneStockBody() {
     if (q) prods = prods.filter(p => (p.code||'').toLowerCase().includes(q) || (p.brand||'').toLowerCase().includes(q) || (p.model||'').toLowerCase().includes(q) || (p.storage||'').toLowerCase().includes(q) || (p.color||'').toLowerCase().includes(q));
     prods.sort((a,b)=>b.id-a.id);
     if (!prods.length){ body.innerHTML = '<div class="card center pad muted">No matching products</div>'; return; }
-    body.innerHTML = `<div class="ios-table-wrap"><table class="ios-table"><thead><tr><th>Code</th><th>Product</th><th>Storage</th><th>Color</th>${cv?'<th>Cost</th>':''}<th>Sale</th><th>In Stock</th><th>Sold</th>${cm?'<th></th>':''}</tr></thead><tbody>${prods.map(p => { const low = p.cnt <= (p.low_stock_threshold||DB.settings.low_stock); return `<tr><td>${codeChip(p.code)}</td><td class="strong">${esc(p.brand)} ${esc(p.model)}</td><td>${esc(p.storage||'-')}</td><td>${esc(p.color||'-')}</td>${cv?`<td class="muted">${fmtInt(p.cost_price)}</td>`:''}<td class="primary-c strong">${fmtInt(p.sale_price)}</td><td class="${low?'warn':'success'} strong">${p.cnt}</td><td class="muted small">${p.sold}</td>${cm?`<td style="display:flex;gap:4px;flex-wrap:wrap"><button class="ios-pill sm" onclick="showEditProduct(${p.id})">Edit</button><button class="ios-pill red sm" onclick="deleteProduct(${p.id})">Del</button></td>`:''}</tr>`; }).join('')}</tbody></table></div>`;
+    body.innerHTML = `<div class="ios-table-wrap"><table class="ios-table"><thead><tr><th>Code</th><th>Product</th><th>Storage</th><th>Color</th>${cv?'<th>Cost</th>':''}<th>Sale</th><th>In Stock</th><th>Sold</th><th></th></tr></thead><tbody>${prods.map(p => { const low = p.cnt <= (p.low_stock_threshold||DB.settings.low_stock); return `<tr><td>${codeChip(p.code,false,false,p.barcode)}</td><td class="strong">${esc(p.brand)} ${esc(p.model)}</td><td>${esc(p.storage||'-')}</td><td>${esc(p.color||'-')}</td>${cv?`<td class="muted">${fmtInt(p.cost_price)}</td>`:''}<td class="primary-c strong">${fmtInt(p.sale_price)}</td><td class="${low?'warn':'success'} strong">${p.cnt}</td><td class="muted small">${p.sold}</td><td style="display:flex;gap:4px;flex-wrap:wrap"><button class="ios-pill sm" onclick="openBarcodePrint('product',${p.id})">🏷️ Print</button>${cm?`<button class="ios-pill sm" onclick="showEditProduct(${p.id})">Edit</button><button class="ios-pill red sm" onclick="deleteProduct(${p.id})">Del</button>`:''}</td></tr>`; }).join('')}</tbody></table></div>`;
   } else {
-    let units = DB.stock_units.map(u => { const p = DB.products.find(x=>x.id===u.product_id)||{}; return {...u, code:p.code, brand:p.brand, model:p.model, storage:p.storage}; });
+    let units = DB.stock_units.map(u => { const p = DB.products.find(x=>x.id===u.product_id)||{}; return {...u, code:p.code, brand:p.brand, model:p.model, storage:p.storage, pbarcode:p.barcode}; });
     if (q) units = units.filter(u => (u.imei||'').toLowerCase().includes(q) || (u.barcode||'').toLowerCase().includes(q) || (u.code||'').toLowerCase().includes(q) || (u.brand||'').toLowerCase().includes(q) || (u.model||'').toLowerCase().includes(q));
     units.sort((a,b)=>b.id-a.id);
     if (!units.length){ body.innerHTML = '<div class="card center pad muted">No matching stock units</div>'; return; }
-    body.innerHTML = `<div class="ios-table-wrap"><table class="ios-table"><thead><tr><th>Code</th><th>Product</th><th>IMEI</th><th>Barcode</th>${cv?'<th>Cost</th>':''}<th>Sale</th><th>Status</th><th>Added</th>${cm?'<th></th>':''}</tr></thead><tbody>${units.map(u => `<tr><td>${codeChip(u.code)}</td><td class="strong">${esc(u.brand||'')} ${esc(u.model||'')} ${esc(u.storage||'')}</td><td>${esc(u.imei||'-')}</td><td>${u.barcode?`<span class="code-chip barcode">🏷️ ${esc(u.barcode)}</span>`:'<span class="muted small">—</span>'}</td>${cv?`<td class="muted">${fmtInt(u.cost_price)}</td>`:''}<td class="primary-c strong">${fmtInt(u.sale_price)}</td><td><span class="badge badge-${u.status}">${u.status.replace(/_/g,' ')}</span></td><td class="muted small">${esc((u.added_at||'').slice(0,10))}</td>${cm && u.status!=='sold' && u.status!=='returned' ? `<td><button class="ios-pill red sm" onclick="deleteStockUnit(${u.id})">Del</button></td>` : (cm?'<td></td>':'')}</tr>`).join('')}</tbody></table></div>`;
+    body.innerHTML = `<div class="ios-table-wrap"><table class="ios-table"><thead><tr><th>Code</th><th>Product</th><th>IMEI</th><th>Barcode</th>${cv?'<th>Cost</th>':''}<th>Sale</th><th>Status</th><th>Added</th><th></th></tr></thead><tbody>${units.map(u => `<tr><td>${codeChip(u.code)}</td><td class="strong">${esc(u.brand||'')} ${esc(u.model||'')} ${esc(u.storage||'')}</td><td>${esc(u.imei||'-')}</td><td>${(u.barcode||u.pbarcode)?`<span class="code-chip barcode">🏷️ ${esc(u.barcode||u.pbarcode)}</span>`:'<span class="muted small">—</span>'}</td>${cv?`<td class="muted">${fmtInt(u.cost_price)}</td>`:''}<td class="primary-c strong">${fmtInt(u.sale_price)}</td><td><span class="badge badge-${u.status}">${u.status.replace(/_/g,' ')}</span></td><td class="muted small">${esc((u.added_at||'').slice(0,10))}</td><td style="display:flex;gap:4px;flex-wrap:wrap"><button class="ios-pill sm" onclick="openBarcodePrint('unit',${u.id})">🏷️ Print</button>${cm && u.status!=='sold' && u.status!=='returned' ? `<button class="ios-pill red sm" onclick="deleteStockUnit(${u.id})">Del</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`;
   }
 }
 function findDuplicateProducts() { const map = new Map(); DB.products.forEach(p => { const k = `${(p.brand||'').toLowerCase().trim()}|${(p.model||'').toLowerCase().trim()}|${(p.storage||'').toLowerCase().trim()}|${(p.color||'').toLowerCase().trim()}`; if (!map.has(k)) map.set(k, []); map.get(k).push(p); }); const g = []; map.forEach(a => { if (a.length > 1) g.push(a); }); return g; }
 function mergeDuplicateProducts() { if (!(currentUser.role==='admin'||currentUser.role==='manager')){ toast('Access denied','error'); return; } const g = findDuplicateProducts(); if (!g.length) { toast('No duplicates','info'); return; } if (!confirm(`Merge ${g.length} group(s)?`)) return; let m = 0; g.forEach(a => { const s = [...a].sort((a,b)=>a.id-b.id); const k = s[0]; s.slice(1).forEach(d => { DB.stock_units.forEach(u => { if (u.product_id === d.id) u.product_id = k.id; }); DB.products = DB.products.filter(p => p.id !== d.id); m++; }); }); save(); toast(`Merged ${m}`,'success'); renderPhoneStock(document.getElementById('content')); }
-function showAddProduct() { if (!(currentUser.role==='admin'||currentUser.role==='manager')){ toast('Access denied','error'); return; } const pc = makeProductCode(DB.ids.products); openModal('Add Phone Product', `<div class="form-grid"><div class="field-hint">🔖 Code: <b class="primary-c">${esc(pc)}</b></div>${field('Brand', '<input id="np-brand" class="ios-input" placeholder="SAMSUNG" autofocus>', true)}${field('Model', '<input id="np-model" class="ios-input" placeholder="A065">', true)}${field('Storage', '<input id="np-storage" class="ios-input" placeholder="64">')}${field('Color', '<input id="np-color" class="ios-input" placeholder="BLACK">')}<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${field('Cost', '<input id="np-cost" class="ios-input" type="number" step="0.01" placeholder="0">')}${field('Sale', '<input id="np-price" class="ios-input" type="number" step="0.01" placeholder="0">')}</div>${field('Low stock alert', '<input id="np-low" class="ios-input" type="number" value="2">')}</div>`, () => { const brand = document.getElementById('np-brand').value.trim(); const model = document.getElementById('np-model').value.trim(); const storage = document.getElementById('np-storage').value.trim(); const color = document.getElementById('np-color').value.trim(); if (!model){ toast('Model required','error'); return false; } const dup = DB.products.find(p => (p.brand||'').toLowerCase() === brand.toLowerCase() && (p.model||'').toLowerCase() === model.toLowerCase() && (p.storage||'').toLowerCase() === storage.toLowerCase() && (p.color||'').toLowerCase() === color.toLowerCase()); if (dup) { toast(`Product ${dup.code} exists`,'error',4000); return false; } const nid = nextId('products'); DB.products.push({ id:nid, code:makeProductCode(nid), brand, model, storage, color, cost_price:Number(document.getElementById('np-cost').value||0), sale_price:Number(document.getElementById('np-price').value||0), low_stock_threshold:Number(document.getElementById('np-low').value||2), created_at:now() }); save(); rebuildOrderHistory(); toast(`Added — ${makeProductCode(nid)}`,'success'); renderPhoneStockBody(); }); }
+function showAddProduct() { if (!(currentUser.role==='admin'||currentUser.role==='manager')){ toast('Access denied','error'); return; } const pc = makeProductCode(DB.ids.products); openModal('Add Phone Product', `<div class="form-grid"><div class="field-hint">🔖 Code: <b class="primary-c">${esc(pc)}</b> &nbsp;·&nbsp; 🏷️ Barcode (auto): <b class="primary-c">${makeBarcode(1, DB.ids.products)}</b></div>${field('Brand', '<input id="np-brand" class="ios-input" placeholder="SAMSUNG" autofocus>', true)}${field('Model', '<input id="np-model" class="ios-input" placeholder="A065">', true)}${field('Storage', '<input id="np-storage" class="ios-input" placeholder="64">')}${field('Color', '<input id="np-color" class="ios-input" placeholder="BLACK">')}<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${field('Cost', '<input id="np-cost" class="ios-input" type="number" step="0.01" placeholder="0">')}${field('Sale', '<input id="np-price" class="ios-input" type="number" step="0.01" placeholder="0">')}</div>${field('Low stock alert', '<input id="np-low" class="ios-input" type="number" value="2">')}</div>`, () => { const brand = document.getElementById('np-brand').value.trim(); const model = document.getElementById('np-model').value.trim(); const storage = document.getElementById('np-storage').value.trim(); const color = document.getElementById('np-color').value.trim(); if (!model){ toast('Model required','error'); return false; } const dup = DB.products.find(p => (p.brand||'').toLowerCase() === brand.toLowerCase() && (p.model||'').toLowerCase() === model.toLowerCase() && (p.storage||'').toLowerCase() === storage.toLowerCase() && (p.color||'').toLowerCase() === color.toLowerCase()); if (dup) { toast(`Product ${dup.code} exists`,'error',4000); return false; } const nid = nextId('products'); DB.products.push({ id:nid, code:makeProductCode(nid), barcode:makeBarcode(1,nid), brand, model, storage, color, cost_price:Number(document.getElementById('np-cost').value||0), sale_price:Number(document.getElementById('np-price').value||0), low_stock_threshold:Number(document.getElementById('np-low').value||2), created_at:now() }); save(); rebuildOrderHistory(); toast(`Added — ${makeProductCode(nid)}`,'success'); renderPhoneStockBody(); }); }
 function showEditProduct(id) { if (!(currentUser.role==='admin'||currentUser.role==='manager')){ toast('Access denied','error'); return; } const p = DB.products.find(x=>x.id===id); if (!p) return; openModal(`Edit — ${p.code}`, `<div class="form-grid">${field('Brand', `<input id="ep-brand" class="ios-input" value="${esc(p.brand||'')}">`)}${field('Model', `<input id="ep-model" class="ios-input" value="${esc(p.model||'')}">`, true)}${field('Storage', `<input id="ep-storage" class="ios-input" value="${esc(p.storage||'')}">`)}${field('Color', `<input id="ep-color" class="ios-input" value="${esc(p.color||'')}">`)}<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${field('Cost', `<input id="ep-cost" class="ios-input" type="number" step="0.01" value="${p.cost_price||0}">`)}${field('Sale', `<input id="ep-price" class="ios-input" type="number" step="0.01" value="${p.sale_price||0}">`)}</div>${field('Low stock', `<input id="ep-low" class="ios-input" type="number" value="${p.low_stock_threshold||2}">`)}</div>`, () => { p.brand = document.getElementById('ep-brand').value.trim(); p.model = document.getElementById('ep-model').value.trim(); p.storage = document.getElementById('ep-storage').value.trim(); p.color = document.getElementById('ep-color').value.trim(); p.cost_price = Number(document.getElementById('ep-cost').value||0); p.sale_price = Number(document.getElementById('ep-price').value||0); p.low_stock_threshold = Number(document.getElementById('ep-low').value||2); save(); rebuildOrderHistory(); toast('Updated','success'); renderPhoneStockBody(); }); }
 function showAddUnit() { if (!(currentUser.role==='admin'||currentUser.role==='manager')){ toast('Access denied','error'); return; } if (!DB.products.length){ toast('Add product first','warn'); return; } const opts = DB.products.map(p => `<option value="${p.id}">${esc(p.code)} · ${esc(p.brand)} ${esc(p.model)} ${esc(p.storage||'')}</option>`).join(''); openModal('Add Stock Unit', `<div class="form-grid">${field('Product', `<select id="nu-product" class="ios-input">${opts}</select>`, true)}${field('IMEI', '<input id="nu-imei" class="ios-input" placeholder="15-digit IMEI">')}${field('Barcode', '<input id="nu-barcode" class="ios-input" placeholder="Scan or type barcode" autofocus>', false, '🏷️ Optional')}${field('Condition', '<select id="nu-cond" class="ios-input"><option value="new">New</option><option value="used">Used</option></select>')}${field('Warranty (months)', '<input id="nu-warranty" class="ios-input" type="number" value="12" min="0">')}${field('Sale price (optional)', '<input id="nu-price" class="ios-input" type="number" step="0.01" placeholder="Default">')}</div>`, () => { const pid = Number(document.getElementById('nu-product').value); const p = DB.products.find(x=>x.id===pid); if (!p) return false; const imei = document.getElementById('nu-imei').value.trim(); const barcode = document.getElementById('nu-barcode').value.trim(); if (imei && DB.stock_units.find(u=>u.imei===imei)){ toast('IMEI exists','error'); return false; } if (barcode && DB.stock_units.find(u=>u.barcode===barcode)){ toast('Barcode exists','error'); return false; } DB.stock_units.push({ id:nextId('stock_units'), product_id:pid, imei:imei||null, barcode:barcode||'', condition:document.getElementById('nu-cond').value, status:'in_stock', cost_price:p.cost_price||0, sale_price:Number(document.getElementById('nu-price').value||p.sale_price||0), warranty_months:Number(document.getElementById('nu-warranty').value||0), added_at:now(), sold_at:null }); save(); toast('Unit added','success'); renderPhoneStockBody(); }); }
 async function deleteProduct(id) { if (!(currentUser.role==='admin'||currentUser.role==='manager')){ toast('Access denied','error'); return; } const p = DB.products.find(x=>x.id===id); if (!p) return; const u = DB.stock_units.filter(x=>x.product_id===id); const ok = await requireDangerConfirm(`DELETE ${p.code}`, u.length ? `${u.length} units linked.` : 'No units.', { warnings: u.length ? 2 : 1, password: u.length > 0 }); if (!ok) return; DB.products = DB.products.filter(x => x.id !== id); if (u.length) DB.stock_units = DB.stock_units.filter(x => x.product_id !== id); save(); rebuildOrderHistory(); toast('Deleted','success'); renderPhoneStockBody(); }
@@ -1954,19 +2095,19 @@ function renderAccessoryBody() {
   if (q) rows = rows.filter(a => (a.code||'').toLowerCase().includes(q) || (a.name||'').toLowerCase().includes(q) || (a.category||'').toLowerCase().includes(q) || (a.barcode||'').toLowerCase().includes(q));
   rows.sort((a,b)=>b.id-a.id);
   if (!rows.length){ body.innerHTML = '<div class="card center pad muted">No items</div>'; return; }
-  body.innerHTML = `<div class="ios-table-wrap"><table class="ios-table"><thead><tr><th>Code</th><th>Name</th><th>Category</th><th>Barcode</th>${cv?'<th>Cost</th>':''}<th>Sale</th><th>Qty</th>${cm?'<th></th>':''}</tr></thead><tbody>${rows.map(a => { const low = (a.qty||0) <= (a.low_stock_threshold||2); return `<tr><td>${codeChip(a.code, true)}</td><td class="strong">${esc(a.name)}</td><td>${esc(a.category||'-')}</td><td>${a.barcode?`<span class="code-chip barcode">🏷️ ${esc(a.barcode)}</span>`:'<span class="muted small">—</span>'}</td>${cv?`<td class="muted">${fmtInt(a.cost_price)}</td>`:''}<td class="primary-c strong">${fmtInt(a.sale_price)}</td><td class="${low?'warn':'success'} strong">${a.qty||0}</td>${cm?`<td style="display:flex;gap:4px;flex-wrap:wrap"><button class="ios-pill sm" onclick="showAddAccessory(${a.id})">Edit</button><button class="ios-pill sm" onclick="adjustAccessoryQty(${a.id})">Qty</button><button class="ios-pill red sm" onclick="deleteAccessory(${a.id})">Del</button></td>`:''}</tr>`; }).join('')}</tbody></table></div>`;
+  body.innerHTML = `<div class="ios-table-wrap"><table class="ios-table"><thead><tr><th>Code</th><th>Name</th><th>Category</th><th>Barcode</th>${cv?'<th>Cost</th>':''}<th>Sale</th><th>Qty</th><th></th></tr></thead><tbody>${rows.map(a => { const low = (a.qty||0) <= (a.low_stock_threshold||2); return `<tr><td>${codeChip(a.code, true)}</td><td class="strong">${esc(a.name)}</td><td>${esc(a.category||'-')}</td><td>${a.barcode?`<span class="code-chip barcode">🏷️ ${esc(a.barcode)}</span>`:'<span class="muted small">—</span>'}</td>${cv?`<td class="muted">${fmtInt(a.cost_price)}</td>`:''}<td class="primary-c strong">${fmtInt(a.sale_price)}</td><td class="${low?'warn':'success'} strong">${a.qty||0}</td><td style="display:flex;gap:4px;flex-wrap:wrap"><button class="ios-pill sm" onclick="openBarcodePrint('acc',${a.id})">🏷️ Print</button>${cm?`<button class="ios-pill sm" onclick="showAddAccessory(${a.id})">Edit</button><button class="ios-pill sm" onclick="adjustAccessoryQty(${a.id})">Qty</button><button class="ios-pill red sm" onclick="deleteAccessory(${a.id})">Del</button>`:''}</td></tr>`; }).join('')}</tbody></table></div>`;
 }
 function showAddAccessory(id) {
   if (!(currentUser.role==='admin'||currentUser.role==='manager')){ toast('Access denied','error'); return; }
   const a = id ? DB.accessories.find(x=>x.id===id) : null;
   const cats = getAllCategories();
   const pc = a ? (a.code||makeAccessoryCode(a.id)) : makeAccessoryCode(DB.ids.accessories);
-  openModal(a?`Edit — ${a.code}`:'Add Stock Item', `<div class="form-grid"><div class="field-hint">🔖 Code: <b style="color:var(--purple)">${esc(pc)}</b></div>${field('Item name', `<input id="na-name" class="ios-input" placeholder="iPhone 15 Tempered Glass" value="${esc(a?.name||'')}" autofocus>`, true)}${field('Barcode', `<input id="na-barcode" class="ios-input" placeholder="Scan or type" value="${esc(a?.barcode||'')}">`, false, '🏷️ Optional')}${field('Category', `<input id="na-cat" class="ios-input" list="acc-cat-suggest" placeholder="Type or pick" value="${esc(a?.category||'')}"><datalist id="acc-cat-suggest">${cats.map(c=>`<option value="${esc(c)}"></option>`).join('')}</datalist>`)}<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${field('Cost', `<input id="na-cost" class="ios-input" type="number" step="0.01" placeholder="0" value="${a?.cost_price ?? ''}">`)}${field('Sale', `<input id="na-price" class="ios-input" type="number" step="0.01" placeholder="0" value="${a?.sale_price ?? ''}">`)}</div>${field('Warranty (months)', `<input id="na-warranty" class="ios-input" type="number" min="0" placeholder="0" value="${a?.warranty_months ?? 0}">`)}<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${field('Quantity', `<input id="na-qty" class="ios-input" type="number" placeholder="0" value="${a?.qty ?? 0}">`)}${field('Low stock', `<input id="na-low" class="ios-input" type="number" value="${a?.low_stock_threshold ?? 2}">`)}</div></div>`, () => {
+  openModal(a?`Edit — ${a.code}`:'Add Stock Item', `<div class="form-grid"><div class="field-hint">🔖 Code: <b style="color:var(--purple)">${esc(pc)}</b></div>${field('Item name', `<input id="na-name" class="ios-input" placeholder="iPhone 15 Tempered Glass" value="${esc(a?.name||'')}" autofocus>`, true)}${field('Barcode', `<input id="na-barcode" class="ios-input" placeholder="Auto-generated if empty" value="${esc(a?.barcode||'')}">`, false, '🏷️ Leave empty = auto barcode')}${field('Category', `<input id="na-cat" class="ios-input" list="acc-cat-suggest" placeholder="Type or pick" value="${esc(a?.category||'')}"><datalist id="acc-cat-suggest">${cats.map(c=>`<option value="${esc(c)}"></option>`).join('')}</datalist>`)}<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${field('Cost', `<input id="na-cost" class="ios-input" type="number" step="0.01" placeholder="0" value="${a?.cost_price ?? ''}">`)}${field('Sale', `<input id="na-price" class="ios-input" type="number" step="0.01" placeholder="0" value="${a?.sale_price ?? ''}">`)}</div>${field('Warranty (months)', `<input id="na-warranty" class="ios-input" type="number" min="0" placeholder="0" value="${a?.warranty_months ?? 0}">`)}<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${field('Quantity', `<input id="na-qty" class="ios-input" type="number" placeholder="0" value="${a?.qty ?? 0}">`)}${field('Low stock', `<input id="na-low" class="ios-input" type="number" value="${a?.low_stock_threshold ?? 2}">`)}</div></div>`, () => {
     const name = document.getElementById('na-name').value.trim();
     if (!name){ toast('Name required','error'); return false; }
     const barcode = document.getElementById('na-barcode').value.trim();
     if (barcode) { const dup = DB.accessories.find(x => x.barcode === barcode && x.id !== id); if (dup) { toast('Barcode used by ' + dup.code, 'error', 4000); return false; } }
-    const data = { name, barcode, category:document.getElementById('na-cat').value.trim(), cost_price:Number(document.getElementById('na-cost').value||0), sale_price:Number(document.getElementById('na-price').value||0), warranty_months:Number(document.getElementById('na-warranty').value||0), qty:Number(document.getElementById('na-qty').value||0), low_stock_threshold:Number(document.getElementById('na-low').value||2) };
+    const data = { name, barcode: barcode || makeBarcode(2, a ? a.id : DB.ids.accessories), category:document.getElementById('na-cat').value.trim(), cost_price:Number(document.getElementById('na-cost').value||0), sale_price:Number(document.getElementById('na-price').value||0), warranty_months:Number(document.getElementById('na-warranty').value||0), qty:Number(document.getElementById('na-qty').value||0), low_stock_threshold:Number(document.getElementById('na-low').value||2) };
     if (a) { Object.assign(a, data); toast('Updated','success'); }
     else { const nid = nextId('accessories'); DB.accessories.push({ id:nid, code:makeAccessoryCode(nid), ...data, created_at:now() }); toast(`Added — ${makeAccessoryCode(nid)}`,'success'); }
     save(); renderAccessoryBody();
@@ -2608,6 +2749,7 @@ async function deleteUser(id) { if (!requireAdmin()) return; const u = DB.users.
 
 /* PRINT */
 function applyPrintSize() {
+  bcCleanup();
   const size = DB?.settings?.print_size || '58mm';
   let style = document.getElementById('dynamic-print-style');
   if (!style) { style = document.createElement('style'); style.id = 'dynamic-print-style'; document.head.appendChild(style); }
