@@ -489,7 +489,7 @@ body.sidebar-hidden .content{padding-left:54px}
       <div id="sidebar-logo-wrap"><div class="brand-icon">📱</div></div>
       <div class="brand-text">
         <div class="brand-name" id="side-shop-name">PHONE HUB</div>
-        <div class="brand-sub">MAHAOYA</div>
+        <div class="brand-sub">Look mobile 0756947700</div>
       </div>
       <button class="sidebar-collapse-btn" onclick="toggleSidebar()" title="Hide menu">⟨</button>
     </div>
@@ -575,6 +575,7 @@ let DB = null, currentUser = null, writeTimer = null;
 let currentReturnSaleId = null, editingUserId = null, tempUserPhoto = undefined;
 let currentShopId = null, shopFilter = 'all';
 let fbConnected = false, fbInitDone = false, syncing = false;
+let resetting = false;   // true while a Delete-All reset is happening: blocks every write of stale data
 let tempOrderItems = [];
 let orderWizard = { brand:'', model:'', part:'', qty:1, note:'', step:0 };
 let currentOrderIdForDetail = null;
@@ -604,7 +605,7 @@ async function wipeAllCaches() {
   try { if ('caches' in window) { const keys = await caches.keys(); for (const k of keys) { try { await caches.delete(k); } catch(e) {} } } } catch(e) {}
 }
 
-function saveSafetyBackup() { try { if (!DB || !DB.users || !DB.users.length) return; localStorage.setItem(LS_SAFE_KEY, JSON.stringify({ data: DB, ts: Date.now(), version: POS_VERSION })); } catch(e) {} }
+function saveSafetyBackup() { if (resetting) return; try { if (!DB || !DB.users || !DB.users.length) return; localStorage.setItem(LS_SAFE_KEY, JSON.stringify({ data: DB, ts: Date.now(), version: POS_VERSION })); } catch(e) {} }
 function loadSafetyBackup() { try { const r = localStorage.getItem(LS_SAFE_KEY); if (!r) return null; const p = JSON.parse(r); if (p && p.data && p.data.products && p.data.users && p.data.users.length) return p.data; } catch(e) {} return null; }
 function isDBValid(db) { if (!db || typeof db !== 'object') return false; if (!Array.isArray(db.users) || !db.users.length) return false; if (!Array.isArray(db.products)) return false; if (!Array.isArray(db.sales)) return false; if (!Array.isArray(db.customers)) return false; return true; }
 
@@ -619,6 +620,7 @@ function setLastSyncTs(ts) { try { localStorage.setItem(LS_LAST_SYNC_KEY, String
 function getPendingAge() { try { const t = Number(localStorage.getItem(LS_PENDING_KEY)) || 0; return t ? Math.floor((Date.now() - t) / 1000) : 0; } catch(e) { return 0; } }
 
 async function manualSync() {
+  if (resetting) return;
   if (syncing) { toast('Sync already running', 'info', 1500); return; }
   if (!DB || !isDBValid(DB)) { toast('❌ Data invalid', 'error'); return; }
   const pending = hasPendingChanges();
@@ -682,9 +684,9 @@ async function loadFromServer() {
 }
 
 async function saveToServer(immediate = false) {
-  if (!DB || !isDBValid(DB)) return;
+  if (resetting || !DB || !isDBValid(DB)) return;
   cacheLocal(); saveSafetyBackup();
-  if (!immediate) { if (writeTimer) clearTimeout(writeTimer); writeTimer = setTimeout(() => saveToServer(true), 250); return; }
+  if (!immediate) { if (writeTimer) clearTimeout(writeTimer); writeTimer = setTimeout(() => { writeTimer = null; saveToServer(true); }, 250); return; }
   try {
     updateStorageStatus('saving');
     DB._lastSaved = Date.now();
@@ -701,10 +703,15 @@ async function saveToServer(immediate = false) {
 }
 
 async function flushPendingChanges() {
-  if (!hasPendingChanges()) return false;
+  if (resetting || !hasPendingChanges()) return false;
   if (!DB || !isDBValid(DB)) return false;
   if (syncing) return false;
   syncing = true;
+  try {
+    const rt = (await fbResetRef.once('value')).val(); let lt = '';
+    try { lt = localStorage.getItem(LS_RESET_TOKEN_KEY) || ''; } catch(e) {}
+    if (rt && rt !== lt) { syncing = false; await handleRemoteReset(rt); return false; }
+  } catch(e) {}
   const icon = document.getElementById('sync-icon');
   if (icon) icon.classList.add('spinning');
   try {
@@ -740,23 +747,29 @@ function updateStorageStatus(state) {
   }
 }
 
-function cacheLocal() { try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); } catch(e) {} }
+function cacheLocal() { if (resetting) return; try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); } catch(e) {} }
 function loadCache() { try { const r = localStorage.getItem(LS_KEY); if (r) return JSON.parse(r); } catch(e) {} return null; }
 
+async function handleRemoteReset(remoteToken) {
+  if (resetting) return;
+  resetting = true; syncing = true;                       // block every write FIRST
+  if (writeTimer) { clearTimeout(writeTimer); writeTimer = null; }
+  console.log('🚨 Reset detected — wiping local cache (old data will NOT be pushed back)');
+  try { await wipeAllCaches(); } catch(e) {}
+  try { localStorage.setItem(LS_RESET_TOKEN_KEY, remoteToken); } catch(e) {}
+  if (currentUser) {
+    document.body.innerHTML = `<div style="position:fixed;inset:0;background:#0a0a0f;color:#fff;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:20px;z-index:99999;font-family:system-ui"><div style="font-size:64px">🗑️</div><h1 style="font-size:22px;margin:0">Data Was Reset</h1><p style="color:#888;max-width:340px;text-align:center;font-size:13px;line-height:1.6">This device's cache has been cleared by another device. Reloading...</p></div>`;
+  }
+  setTimeout(() => location.reload(), 2000);
+}
 function startResetListener() {
-  fbResetRef.on('value', async (snap) => {
+  fbResetRef.on('value', (snap) => {
     const remoteToken = snap.val();
-    if (!remoteToken) return;
+    if (!remoteToken || resetting) return;
     let localToken = '';
     try { localToken = localStorage.getItem(LS_RESET_TOKEN_KEY) || ''; } catch(e) {}
     if (localToken === remoteToken) return;
-    console.log('🚨 Reset token changed — wiping local cache');
-    syncing = true;
-    try { await wipeAllCaches(); } catch(e) {}
-    if (currentUser) {
-      document.body.innerHTML = `<div style="position:fixed;inset:0;background:#0a0a0f;color:#fff;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:20px;z-index:99999;font-family:system-ui"><div style="font-size:64px">🗑️</div><h1 style="font-size:22px;margin:0">Data Was Reset</h1><p style="color:#888;max-width:340px;text-align:center;font-size:13px;line-height:1.6">This device's cache has been cleared by another device. Reloading...</p></div>`;
-    }
-    setTimeout(() => location.reload(), 2000);
+    handleRemoteReset(remoteToken);
   });
 }
 
@@ -772,7 +785,7 @@ function startRealtimeSync() {
     if (!syncing) updateStorageStatus();
   });
   fbRef.on('value', (snap) => {
-    if (!fbInitDone || syncing) return;
+    if (!fbInitDone || syncing || resetting) return;
     if (hasPendingChanges()) { updateStorageStatus('offline-pending'); return; }
     const remote = snap.val(); if (!isDBValid(remote)) return;
     const ls = (DB.ids?.sales||0)+(DB.ids?.products||0), rs = (remote.ids?.sales||0)+(remote.ids?.products||0);
@@ -2710,6 +2723,7 @@ async function resetData() {
     'This will permanently erase: Firebase data, this device\'s cache, AND every logged-in device\'s cache. All devices will be force-reloaded.',
     { warnings: 3, password: true, adminRole: true });
   if (!ok) return;
+  resetting = true; if (writeTimer) { clearTimeout(writeTimer); writeTimer = null; }
   syncing = true;
   const icon = document.getElementById('sync-icon');
   if (icon) icon.classList.add('spinning');
@@ -2732,7 +2746,7 @@ async function resetData() {
     setTimeout(() => location.reload(), 1800);
   } catch(e) {
     console.error('Reset failed:', e);
-    syncing = false;
+    resetting = false; syncing = false;
     if (icon) icon.classList.remove('spinning');
     updateStorageStatus('disconnected');
     toast('❌ Reset failed: ' + (e.message || 'Check internet'), 'error', 5000);
@@ -2822,7 +2836,7 @@ document.addEventListener('mousedown', (e) => {
 })();
 document.getElementById('login-pass').addEventListener('keypress', e => { if (e.key==='Enter') doLogin(); });
 window.addEventListener('beforeunload', () => {
-  if (writeTimer) { clearTimeout(writeTimer); try { if (isDBValid(DB)) { cacheLocal(); saveSafetyBackup(); fbRef.set(DB); setLastSyncTs(Date.now()); clearPending(); } } catch(e) { markPending(); } }
+  if (!resetting && writeTimer) { clearTimeout(writeTimer); try { if (isDBValid(DB)) { cacheLocal(); saveSafetyBackup(); fbRef.set(DB); setLastSyncTs(Date.now()); clearPending(); } } catch(e) { markPending(); } }
 });
 </script>
 </body>
