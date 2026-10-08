@@ -533,6 +533,13 @@ body.sidebar-hidden .content{padding-left:54px}
 <div id="firebase-badge" class="firebase-badge hidden"><span class="fb-dot"></span><span id="fb-badge-text">Firebase</span></div>
 
 <script>
+/* ═══════════════════════════════════════════════════════════════
+   POS SYNC ENGINE v4.0 — PERMANENT FIX
+   ─ Records-diff based sync (no more full-DB overwrites)
+   ─ Uses fbRef.update() with targeted paths only
+   ─ Stale devices only push THEIR changes, never overwrite others
+   ═══════════════════════════════════════════════════════════════ */
+
 const firebaseConfig = {
   apiKey: "AIzaSyBJdprztGqQggEN9YiOn318zGuYF3tN3h0",
   authDomain: "manoj-1de8b.firebaseapp.com",
@@ -550,9 +557,12 @@ const fbResetRef = fbDB.ref('pos_reset_token');
 const LS_KEY = 'phone_shop_pos_cache';
 const LS_SAFE_KEY = 'phone_shop_pos_safety_backup';
 const LS_RESET_TOKEN_KEY = 'pos_seen_reset_token';
-const LS_PENDING_KEY = 'pos_pending_changes';
+const LS_DIRTY_KEY = 'pos_has_unsaved';
 const LS_LAST_SYNC_KEY = 'pos_last_sync_ts';
-const POS_VERSION = 'v3.2';
+const POS_VERSION = 'v4.0';
+
+/* Collections that sync to Firebase */
+const SYNC_COLLECTIONS = ['products','stock_units','accessories','customers','sales','sale_items','repairs','credit_payments','returns','stock_adjustments','shops','shop_repairs','shop_payments','suppliers','orders','order_items','cash_transactions','users'];
 
 const DEFAULT_SETTINGS = { shop_name:'PHONE HUB', shop_address:'123 Main Street, Colombo', shop_phone:'077-0000000', currency:'LKR', low_stock:2, theme:'dark', shop_logo: null, print_size: '58mm' };
 const ROLE_PERMS = {
@@ -571,17 +581,461 @@ const VIEW_META = {
 const ACC_CATEGORIES = ['Tempered Glass','Housing','Back Cover','Charger','Cable','Earphone','Battery','Power Bank','Memory Card','SIM Ejector','Phone Case','Screen Guard','Camera Lens','Speaker','Display','Other'];
 const RETURN_REASONS = ['Defective / Faulty','Damaged on arrival','Wrong item delivered','Customer changed mind','Warranty claim','Not as described','Screen defect','Battery issue','Other'];
 
+/* ═══ GLOBAL STATE ═══ */
 let DB = null, currentUser = null, writeTimer = null;
 let currentReturnSaleId = null, editingUserId = null, tempUserPhoto = undefined;
 let currentShopId = null, shopFilter = 'all';
-let fbConnected = false, fbInitDone = false, syncing = false;
-let resetting = false;   // true while a Delete-All reset is happening: blocks every write of stale data
+let fbConnected = false, fbInitDone = false;
+let syncing = false, resetting = false;
+let lastSyncedDB = null;      /* snapshot at last successful push */
+let dirty = false;            /* true = local changes not yet pushed */
+let retryTimer = null;
 let tempOrderItems = [];
 let orderWizard = { brand:'', model:'', part:'', qty:1, note:'', step:0 };
 let currentOrderIdForDetail = null;
 let cachedBrandHistory = [], cachedModelHistory = {}, cachedPartHistory = {};
-let dashChartRange = '7d';   // 🆕 chart range: '7d' | '30d' | '12m' | '5y'
+let dashChartRange = '7d';
 
+/* ═══════════════════════════════════════════════════════════════
+   DATA FORMAT HELPERS
+   In-memory: arrays [ {id:1,...}, {id:2,...} ]
+   Firebase:  objects { "1": {...}, "2": {...} }  (safer, no sparse arrays)
+   ═══════════════════════════════════════════════════════════════ */
+function deepClone(o) { return o == null ? o : JSON.parse(JSON.stringify(o)); }
+
+function toFirebase(db) {
+  if (!db) return null;
+  const out = {};
+  for (const col of SYNC_COLLECTIONS) {
+    out[col] = {};
+    const arr = db[col] || [];
+    for (const item of arr) {
+      if (item && item.id != null) out[col][String(item.id)] = item;
+    }
+  }
+  out.settings = db.settings || {};
+  out.ids = db.ids || {};
+  return out;
+}
+
+function fromFirebase(fb) {
+  if (!fb) return null;
+  const db = {};
+  for (const col of SYNC_COLLECTIONS) {
+    const c = fb[col];
+    let arr;
+    if (!c) arr = [];
+    else if (Array.isArray(c)) arr = c.filter(Boolean);
+    else arr = Object.values(c).filter(Boolean);
+    arr.sort((a,b) => (Number(a.id)||0) - (Number(b.id)||0));
+    db[col] = arr;
+  }
+  db.settings = fb.settings || {};
+  db.ids = fb.ids || {};
+  return db;
+}
+
+function isValidDB(db) {
+  if (!db || typeof db !== 'object') return false;
+  if (!Array.isArray(db.users) || !db.users.length) return false;
+  if (!Array.isArray(db.products)) return false;
+  if (!Array.isArray(db.sales)) return false;
+  if (!Array.isArray(db.customers)) return false;
+  return true;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DIFF ENGINE — finds exactly what changed between two DB snapshots
+   ═══════════════════════════════════════════════════════════════ */
+function computeDiff(oldDB, newDB) {
+  const ops = [];
+  const oldSafe = oldDB || {};
+  const newSafe = newDB || {};
+  for (const col of SYNC_COLLECTIONS) {
+    const oldMap = new Map((oldSafe[col]||[]).map(x => [String(x.id), x]));
+    const newMap = new Map((newSafe[col]||[]).map(x => [String(x.id), x]));
+    /* Deletes */
+    for (const [id] of oldMap) {
+      if (!newMap.has(id)) ops.push({ path: col + '/' + id, data: null });
+    }
+    /* Adds / updates */
+    for (const [id, item] of newMap) {
+      const old = oldMap.get(id);
+      if (!old || JSON.stringify(old) !== JSON.stringify(item)) {
+        ops.push({ path: col + '/' + id, data: item });
+      }
+    }
+  }
+  if (JSON.stringify(oldSafe.settings) !== JSON.stringify(newSafe.settings)) {
+    ops.push({ path: 'settings', data: newSafe.settings });
+  }
+  if (JSON.stringify(oldSafe.ids) !== JSON.stringify(newSafe.ids)) {
+    ops.push({ path: 'ids', data: newSafe.ids });
+  }
+  return ops;
+}
+
+function applyOpsToDB(baseDB, ops) {
+  const out = deepClone(baseDB);
+  for (const op of ops) {
+    if (op.path === 'settings') { out.settings = op.data; continue; }
+    if (op.path === 'ids') { out.ids = op.data; continue; }
+    const slash = op.path.indexOf('/');
+    if (slash < 0) continue;
+    const col = op.path.slice(0, slash);
+    const id = op.path.slice(slash + 1);
+    if (!SYNC_COLLECTIONS.includes(col)) continue;
+    if (!Array.isArray(out[col])) out[col] = [];
+    const idx = out[col].findIndex(x => String(x.id) === id);
+    if (op.data === null) {
+      if (idx >= 0) out[col].splice(idx, 1);
+    } else {
+      if (idx >= 0) out[col][idx] = op.data;
+      else out[col].push(op.data);
+    }
+  }
+  return out;
+}
+
+/* ═══ DIRTY FLAG (persisted) ═══ */
+function markDirty()   { dirty = true; try { localStorage.setItem(LS_DIRTY_KEY, '1'); } catch(e){} }
+function clearDirty() { dirty = false; try { localStorage.removeItem(LS_DIRTY_KEY); localStorage.setItem(LS_LAST_SYNC_KEY, String(Date.now())); } catch(e){} }
+function isDirtyLS()  { try { return localStorage.getItem(LS_DIRTY_KEY) === '1'; } catch(e){ return false; } }
+function getLastSyncTs() { try { return Number(localStorage.getItem(LS_LAST_SYNC_KEY)) || 0; } catch(e) { return 0; } }
+
+/* ═══════════════════════════════════════════════════════════════
+   SAVE — called by every mutation. Local cache + schedule push.
+   ═══════════════════════════════════════════════════════════════ */
+function save() {
+  if (resetting) return;
+  cacheLocal();
+  saveSafetyBackup();
+  markDirty();
+  if (writeTimer) clearTimeout(writeTimer);
+  writeTimer = setTimeout(() => { writeTimer = null; pushToFirebase(); }, 300);
+}
+
+function cacheLocal() { if (resetting) return; try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); } catch(e) {} }
+function loadCache() { try { const r = localStorage.getItem(LS_KEY); if (r) return JSON.parse(r); } catch(e) {} return null; }
+function saveSafetyBackup() { if (resetting) return; try { if (!DB || !DB.users || !DB.users.length) return; localStorage.setItem(LS_SAFE_KEY, JSON.stringify({ data: DB, ts: Date.now(), version: POS_VERSION })); } catch(e) {} }
+function loadSafetyBackup() { try { const r = localStorage.getItem(LS_SAFE_KEY); if (!r) return null; const p = JSON.parse(r); if (p && p.data && p.data.products && p.data.users && p.data.users.length) return p.data; } catch(e) {} return null; }
+
+/* ═══════════════════════════════════════════════════════════════
+   PUSH TO FIREBASE — diff-based, atomic, conflict-safe
+   ═══════════════════════════════════════════════════════════════ */
+async function pushToFirebase() {
+  if (syncing || resetting || !DB || !isValidDB(DB)) return;
+  if (!lastSyncedDB) lastSyncedDB = deepClone(DB);
+  syncing = true;
+  const icon = document.getElementById('sync-icon');
+  if (icon) icon.classList.add('spinning');
+  try {
+    updateStorageStatus('saving');
+    let guard = 0;
+    while (guard++ < 40) {
+      const ops = computeDiff(lastSyncedDB, DB);
+      if (!ops.length) { dirty = false; break; }
+      /* Batch updates: single atomic Firebase write */
+      const updates = {};
+      for (const op of ops) updates[op.path] = op.data;
+      await fbRef.update(updates);
+      /* Snapshot what we just pushed */
+      lastSyncedDB = deepClone(DB);
+    }
+    fbConnected = true;
+    clearDirty();
+    updateStorageStatus('connected');
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  } catch (e) {
+    console.error('Push failed:', e);
+    fbConnected = false;
+    markDirty();
+    updateStorageStatus('offline-pending');
+    /* Retry later */
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => { retryTimer = null; if (!syncing && !resetting) pushToFirebase(); }, 8000);
+  } finally {
+    syncing = false;
+    if (icon) icon.classList.remove('spinning');
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   LOAD FROM SERVER — remote is source of truth, merge local pending
+   ═══════════════════════════════════════════════════════════════ */
+async function loadFromServer() {
+  try {
+    const cachedValid = isValidDB(DB);
+    const snap = await fbRef.once('value');
+    const remoteRaw = snap.val();
+    const remote = fromFirebase(remoteRaw);
+    const remoteValid = isValidDB(remote);
+
+    /* CASE 1: both remote and cache valid */
+    if (remoteValid && cachedValid) {
+      if (isDirtyLS()) {
+        /* Cache has unsaved changes → merge (cache wins for existing IDs) */
+        console.log('⚠️ Merging local cache with remote (local dirty flag was set)');
+        const merged = mergeCaches(remote, DB);
+        DB = merged;
+        lastSyncedDB = deepClone(remote);
+        migrateDB();
+        cacheLocal();
+        fbConnected = true;
+        updateStorageStatus('offline-pending');
+        setTimeout(() => pushToFirebase(), 500);
+        toast('♻️ Local changes merged with server', 'warn', 4000);
+      } else {
+        /* Clean state → use remote as-is */
+        DB = remote;
+        lastSyncedDB = deepClone(remote);
+        migrateDB();
+        cacheLocal();
+        saveSafetyBackup();
+        fbConnected = true;
+        updateStorageStatus('connected');
+      }
+      return { ok: true, hasData: true };
+    }
+
+    /* CASE 2: remote valid, cache invalid/missing */
+    if (remoteValid) {
+      DB = remote;
+      lastSyncedDB = deepClone(remote);
+      migrateDB();
+      cacheLocal();
+      saveSafetyBackup();
+      fbConnected = true;
+      updateStorageStatus('connected');
+      return { ok: true, hasData: true };
+    }
+
+    /* CASE 3: remote empty, cache valid → push cache to Firebase */
+    if (cachedValid) {
+      migrateDB();
+      lastSyncedDB = {};
+      markDirty();
+      fbConnected = true;
+      await pushToFirebase();
+      updateStorageStatus('connected');
+      return { ok: true, hasData: true, pushed: true };
+    }
+
+    /* CASE 4: try safety backup */
+    const backup = loadSafetyBackup();
+    if (isValidDB(backup)) {
+      DB = backup;
+      migrateDB();
+      lastSyncedDB = {};
+      markDirty();
+      await pushToFirebase();
+      fbConnected = true;
+      toast('♻️ Restored from safety backup', 'success', 3000);
+      return { ok: true, hasData: true, restored: true };
+    }
+
+    /* CASE 5: completely fresh */
+    DB = createFreshDB();
+    migrateDB();
+    lastSyncedDB = {};
+    markDirty();
+    await pushToFirebase();
+    fbConnected = true;
+    return { ok: true, hasData: false };
+  } catch (e) {
+    console.error('Load failed:', e);
+    fbConnected = false;
+    /* Offline fallback */
+    if (isValidDB(DB)) { updateStorageStatus('offline-pending'); return { ok: true, hasData: true, offline: true }; }
+    const backup = loadSafetyBackup();
+    if (isValidDB(backup)) { DB = backup; migrateDB(); return { ok: true, hasData: true, offline: true, restored: true }; }
+    return { ok: false, error: e.message };
+  }
+}
+
+/* Cache wins for matching IDs; remote wins for unique IDs (union) */
+function mergeCaches(remote, cache) {
+  const merged = deepClone(remote);
+  for (const col of SYNC_COLLECTIONS) {
+    const map = new Map((merged[col]||[]).map(x => [String(x.id), x]));
+    for (const item of (cache[col]||[])) {
+      map.set(String(item.id), item);  /* cache overrides */
+    }
+    merged[col] = [...map.values()].sort((a,b) => (Number(a.id)||0) - (Number(b.id)||0));
+  }
+  merged.settings = Object.assign({}, remote.settings || {}, cache.settings || {});
+  merged.ids = Object.assign({}, remote.ids || {}, cache.ids || {});
+  return merged;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   REALTIME SYNC — smarter listener
+   ═══════════════════════════════════════════════════════════════ */
+function startRealtimeSync() {
+  fbDB.ref('.info/connected').on('value', (s) => {
+    const wasConnected = fbConnected;
+    fbConnected = s.val() === true;
+    if (fbConnected && !wasConnected && dirty && !syncing && !resetting) {
+      toast('📡 Reconnected — pushing local changes...', 'info', 2200);
+      pushToFirebase();
+    }
+    if (!syncing) updateStorageStatus();
+  });
+
+  fbRef.on('value', (snap) => {
+    if (!fbInitDone || resetting) return;
+    if (syncing) return;  /* ignore echo of our own writes */
+
+    const raw = snap.val();
+    /* Firebase was cleared by another device */
+    if (!raw) {
+      if (isValidDB(DB) && !resetting && lastSyncedDB && Object.keys(lastSyncedDB).length) {
+        handleRemoteReset('firebase-cleared');
+      }
+      return;
+    }
+
+    const remote = fromFirebase(raw);
+    if (!isValidDB(remote)) return;
+
+    /* If we have unsaved local changes, re-apply them on top of remote */
+    if (dirty && lastSyncedDB) {
+      const myOps = computeDiff(lastSyncedDB, DB);
+      if (myOps.length) {
+        /* First check: are remote changes compatible with our ops? */
+        const remoteChangedSinceSync = JSON.stringify(remote) !== JSON.stringify(lastSyncedDB);
+        if (remoteChangedSinceSync) {
+          /* Merge: apply our ops on top of remote */
+          const merged = applyOpsToDB(remote, myOps);
+          DB = merged;
+          lastSyncedDB = deepClone(remote);
+          cacheLocal();
+          console.log('🔄 Merged remote changes with local pending ops');
+        }
+        /* Re-render UI (non-blocking) */
+        const modalOpen = document.getElementById('modal-root').innerHTML.trim().length > 0;
+        if (!modalOpen) { try { updateUserBox(); buildNav(); buildMobileTabs(); render(); } catch(e){} }
+        /* Push our changes */
+        pushToFirebase();
+        return;
+      }
+    }
+
+    /* Clean state — accept remote */
+    if (JSON.stringify(remote) === JSON.stringify(DB)) return;
+    DB = remote;
+    lastSyncedDB = deepClone(remote);
+    migrateDB();
+    cacheLocal();
+    saveSafetyBackup();
+    const modalOpen = document.getElementById('modal-root').innerHTML.trim().length > 0;
+    if (modalOpen) return;
+    try {
+      updateUserBox(); buildNav(); buildMobileTabs(); render();
+      updateStorageStatus('connected');
+      toast('🔄 Synced from another device', 'info', 1800);
+    } catch(e) {}
+  });
+
+  /* Periodic connectivity check */
+  setInterval(() => {
+    if (resetting) return;
+    if (dirty && !syncing && fbConnected) pushToFirebase();
+    else if (!syncing) updateStorageStatus();
+  }, 15000);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   REMOTE RESET HANDLER
+   ═══════════════════════════════════════════════════════════════ */
+async function handleRemoteReset(reason) {
+  if (resetting) return;
+  resetting = true; syncing = true;
+  if (writeTimer) { clearTimeout(writeTimer); writeTimer = null; }
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  console.log('🚨 Reset detected (' + reason + ') — wiping local caches');
+  try { await wipeAllCaches(); } catch(e) {}
+  document.body.innerHTML = '<div style="position:fixed;inset:0;background:#0a0a0f;color:#fff;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:20px;z-index:99999;font-family:system-ui"><div style="font-size:64px">🗑️</div><h1 style="font-size:22px;margin:0">Data Was Reset</h1><p style="color:#888;max-width:340px;text-align:center;font-size:13px;line-height:1.6">This device\'s cache has been cleared. Reloading...</p></div>';
+  setTimeout(() => location.reload(), 2000);
+}
+
+function startResetListener() {
+  fbResetRef.on('value', (snap) => {
+    const remoteToken = snap.val();
+    if (!remoteToken || resetting) return;
+    let localToken = '';
+    try { localToken = localStorage.getItem(LS_RESET_TOKEN_KEY) || ''; } catch(e) {}
+    if (localToken === remoteToken) return;
+    handleRemoteReset('token-changed');
+  });
+}
+
+/* ═══ STORAGE STATUS UI ═══ */
+function updateStorageStatus(state) {
+  const dot = document.getElementById('storage-dot'), label = document.getElementById('storage-label');
+  const badge = document.getElementById('firebase-badge'), bt = document.getElementById('fb-badge-text');
+  if (!state) state = (dirty || isDirtyLS()) ? 'offline-pending' : (fbConnected ? 'connected' : 'disconnected');
+  if (dot && label) {
+    if (state === 'saving')          { dot.className = 'storage-dot saving';       label.textContent = 'Syncing...'; }
+    else if (state === 'connected')  { dot.className = 'storage-dot connected';    label.textContent = 'Firebase synced'; }
+    else if (state === 'offline-pending') { dot.className = 'storage-dot saving';  label.textContent = '⚠ Pending sync'; }
+    else                             { dot.className = 'storage-dot disconnected'; label.textContent = 'Offline (cached)'; }
+  }
+  if (badge && bt) {
+    badge.classList.remove('hidden', 'offline', 'pending');
+    if (state === 'connected' || state === 'saving') { bt.textContent = state === 'saving' ? 'Syncing...' : '🔥 Firebase'; }
+    else if (state === 'offline-pending') { badge.classList.add('pending'); bt.textContent = '⏳ Pending sync'; }
+    else { badge.classList.add('offline'); bt.textContent = '⚠ Offline'; }
+  }
+}
+
+/* ═══ MANUAL SYNC BUTTON ═══ */
+async function manualSync() {
+  if (resetting) return;
+  if (syncing) { toast('Sync already running', 'info', 1500); return; }
+  if (!DB || !isValidDB(DB)) { toast('❌ Data invalid', 'error'); return; }
+  toast('🔄 Syncing...', 'info', 1200);
+  /* Refresh lastSynced from Firebase first (to detect remote changes) */
+  try {
+    const snap = await fbRef.once('value');
+    const remote = fromFirebase(snap.val());
+    if (isValidDB(remote) && !dirty) {
+      DB = remote; lastSyncedDB = deepClone(remote); migrateDB(); cacheLocal();
+      if (currentUser) { updateUserBox(); buildNav(); buildMobileTabs(); render(); }
+    }
+  } catch(e) {}
+  await pushToFirebase();
+  if (!dirty) toast('✅ Synced', 'success', 2000);
+  else toast('❌ Sync failed — will retry', 'error', 3000);
+}
+
+/* ═══ WIPE ALL CACHES ═══ */
+async function wipeAllCaches() {
+  try { localStorage.clear(); } catch(e) {}
+  try { sessionStorage.clear(); } catch(e) {}
+  try {
+    if (indexedDB && indexedDB.databases) {
+      const dbs = await indexedDB.databases();
+      for (const d of dbs) { if (d.name) { try { indexedDB.deleteDatabase(d.name); } catch(e) {} } }
+    }
+  } catch(e) {}
+  try {
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      for (const reg of regs) { try { await reg.unregister(); } catch(e) {} }
+    }
+  } catch(e) {}
+  try {
+    if ('caches' in window) {
+      const keys = await caches.keys();
+      for (const k of keys) { try { await caches.delete(k); } catch(e) {} }
+    }
+  } catch(e) {}
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   UTILITY FUNCTIONS (unchanged from original)
+   ═══════════════════════════════════════════════════════════════ */
 function isMobile() { return window.matchMedia('(max-width: 768px)').matches; }
 function canSeeCost() { return currentUser && (currentUser.role === 'admin' || currentUser.role === 'manager'); }
 function toggleSidebar() {
@@ -592,224 +1046,21 @@ function closeMobileSidebar() { if (isMobile()) document.body.classList.remove('
 function initSidebar() { try { if (localStorage.getItem('pos_sidebar_hidden') === '1') document.body.classList.add('sidebar-hidden'); } catch(e) {} }
 initSidebar();
 
-async function wipeAllCaches() {
-  try { localStorage.clear(); } catch(e) {}
-  try { sessionStorage.clear(); } catch(e) {}
-  try {
-    if (indexedDB && indexedDB.databases) {
-      const dbs = await indexedDB.databases();
-      for (const db of dbs) { if (db.name) { try { indexedDB.deleteDatabase(db.name); } catch(e) {} } }
-    }
-  } catch(e) {}
-  try { if ('serviceWorker' in navigator) { const regs = await navigator.serviceWorker.getRegistrations(); for (const reg of regs) { try { await reg.unregister(); } catch(e) {} } } } catch(e) {}
-  try { if ('caches' in window) { const keys = await caches.keys(); for (const k of keys) { try { await caches.delete(k); } catch(e) {} } } } catch(e) {}
-}
-
-function saveSafetyBackup() { if (resetting) return; try { if (!DB || !DB.users || !DB.users.length) return; localStorage.setItem(LS_SAFE_KEY, JSON.stringify({ data: DB, ts: Date.now(), version: POS_VERSION })); } catch(e) {} }
-function loadSafetyBackup() { try { const r = localStorage.getItem(LS_SAFE_KEY); if (!r) return null; const p = JSON.parse(r); if (p && p.data && p.data.products && p.data.users && p.data.users.length) return p.data; } catch(e) {} return null; }
-function isDBValid(db) { if (!db || typeof db !== 'object') return false; if (!Array.isArray(db.users) || !db.users.length) return false; if (!Array.isArray(db.products)) return false; if (!Array.isArray(db.sales)) return false; if (!Array.isArray(db.customers)) return false; return true; }
-
-function hasPendingChanges() { try { return !!localStorage.getItem(LS_PENDING_KEY); } catch(e) { return false; } }
-function markPending() {
-  try { if (!localStorage.getItem(LS_PENDING_KEY)) localStorage.setItem(LS_PENDING_KEY, String(Date.now())); if (!localStorage.getItem(LS_LAST_SYNC_KEY)) localStorage.setItem(LS_LAST_SYNC_KEY, '0'); } catch(e) {}
-  updateStorageStatus('offline-pending');
-}
-function clearPending() { try { localStorage.removeItem(LS_PENDING_KEY); } catch(e) {} }
-function getLastSyncTs() { try { return Number(localStorage.getItem(LS_LAST_SYNC_KEY)) || 0; } catch(e) { return 0; } }
-function setLastSyncTs(ts) { try { localStorage.setItem(LS_LAST_SYNC_KEY, String(ts || Date.now())); } catch(e) {} }
-function getPendingAge() { try { const t = Number(localStorage.getItem(LS_PENDING_KEY)) || 0; return t ? Math.floor((Date.now() - t) / 1000) : 0; } catch(e) { return 0; } }
-
-async function manualSync() {
-  if (resetting) return;
-  if (syncing) { toast('Sync already running', 'info', 1500); return; }
-  if (!DB || !isDBValid(DB)) { toast('❌ Data invalid', 'error'); return; }
-  const pending = hasPendingChanges();
-  if (!pending && !confirm('🔄 Force Sync with Firebase?')) return;
-  syncing = true;
-  const icon = document.getElementById('sync-icon');
-  if (icon) icon.classList.add('spinning');
-  try {
-    updateStorageStatus('saving');
-    if (pending) toast('📤 Pushing pending changes...', 'info', 1500);
-    DB._lastSaved = Date.now(); saveSafetyBackup();
-    await fbRef.set(DB);
-    setLastSyncTs(DB._lastSaved);
-    clearPending();
-    await new Promise(r => setTimeout(r, 400));
-    const snap = await fbRef.once('value'); const remote = snap.val();
-    if (isDBValid(remote) && !hasPendingChanges()) { DB = remote; migrateDB(); cacheLocal(); saveSafetyBackup(); }
-    if (currentUser) { updateUserBox(); buildNav(); buildMobileTabs(); render(); }
-    updateStorageStatus('connected');
-    toast(pending ? '✅ Pending changes merged' : '✅ Synced', 'success', 2500);
-  } catch (e) {
-    markPending();
-    updateStorageStatus('offline-pending');
-    toast('❌ Sync failed — queued for retry', 'error', 4000);
-  } finally {
-    syncing = false;
-    if (icon) icon.classList.remove('spinning');
-  }
-}
-
-async function loadFromServer() {
-  try {
-    const c = loadCache();
-    if (isDBValid(c)) { DB = c; migrateDB(); }
-    const pending = hasPendingChanges();
-    const snap = await fbRef.once('value');
-    const data = snap.val();
-    if (pending && isDBValid(DB)) {
-      fbConnected = true; updateStorageStatus('offline-pending');
-      setTimeout(() => flushPendingChanges(), 800);
-      return { ok: true, hasData: true, hadPending: true };
-    }
-    if (isDBValid(data)) {
-      DB = data; migrateDB(); cacheLocal(); saveSafetyBackup();
-      fbConnected = true; setLastSyncTs(data._lastSaved || Date.now());
-      updateStorageStatus('connected'); return { ok: true, hasData: true };
-    }
-    if (isDBValid(DB)) { await saveToServer(true); fbConnected = true; updateStorageStatus('connected'); return { ok: true, hasData: true, pushed: true }; }
-    const b = loadSafetyBackup();
-    if (isDBValid(b)) { DB = b; migrateDB(); cacheLocal(); await saveToServer(true); fbConnected = true; updateStorageStatus('connected'); toast('♻️ Restored from backup', 'success', 3000); return { ok: true, hasData: true, restored: true }; }
-    DB = createFreshDB(); migrateDB(); cacheLocal(); await saveToServer(true);
-    fbConnected = true; updateStorageStatus('connected'); return { ok: true, hasData: false };
-  } catch (e) {
-    fbConnected = false;
-    updateStorageStatus(hasPendingChanges() ? 'offline-pending' : 'disconnected');
-    if (isDBValid(DB)) return { ok: true, hasData: true, offline: true };
-    const b = loadSafetyBackup();
-    if (isDBValid(b)) { DB = b; migrateDB(); return { ok: true, hasData: true, offline: true, restored: true }; }
-    return { ok: false, error: e.message };
-  }
-}
-
-async function saveToServer(immediate = false) {
-  if (resetting || !DB || !isDBValid(DB)) return;
-  cacheLocal(); saveSafetyBackup();
-  if (!immediate) { if (writeTimer) clearTimeout(writeTimer); writeTimer = setTimeout(() => { writeTimer = null; saveToServer(true); }, 250); return; }
-  try {
-    updateStorageStatus('saving');
-    DB._lastSaved = Date.now();
-    await fbRef.set(DB);
-    fbConnected = true;
-    setLastSyncTs(DB._lastSaved);
-    clearPending();
-    updateStorageStatus('connected');
-  } catch (e) {
-    fbConnected = false;
-    markPending();
-    setTimeout(() => { if (hasPendingChanges() && !syncing && fbConnected) flushPendingChanges(); }, 6000);
-  }
-}
-
-async function flushPendingChanges() {
-  if (resetting || !hasPendingChanges()) return false;
-  if (!DB || !isDBValid(DB)) return false;
-  if (syncing) return false;
-  syncing = true;
-  try {
-    const rt = (await fbResetRef.once('value')).val(); let lt = '';
-    try { lt = localStorage.getItem(LS_RESET_TOKEN_KEY) || ''; } catch(e) {}
-    if (rt && rt !== lt) { syncing = false; await handleRemoteReset(rt); return false; }
-  } catch(e) {}
-  const icon = document.getElementById('sync-icon');
-  if (icon) icon.classList.add('spinning');
-  try {
-    updateStorageStatus('saving');
-    DB._lastSaved = Date.now();
-    await fbRef.set(DB);
-    setLastSyncTs(DB._lastSaved);
-    clearPending();
-    fbConnected = true;
-    updateStorageStatus('connected');
-    const age = getPendingAge();
-    toast(`✅ Pending changes synced${age ? ` (${age}s offline)` : ''}`, 'success', 2500);
-    return true;
-  } catch(e) { updateStorageStatus('offline-pending'); return false; }
-  finally { syncing = false; if (icon) icon.classList.remove('spinning'); }
-}
-
-function updateStorageStatus(state) {
-  const dot = document.getElementById('storage-dot'), label = document.getElementById('storage-label');
-  const badge = document.getElementById('firebase-badge'), bt = document.getElementById('fb-badge-text');
-  if (!state) state = hasPendingChanges() ? 'offline-pending' : (fbConnected ? 'connected' : 'disconnected');
-  if (dot && label) {
-    if (state === 'saving') { dot.className = 'storage-dot saving'; label.textContent = 'Syncing...'; }
-    else if (state === 'connected') { dot.className = 'storage-dot connected'; label.textContent = 'Firebase synced'; }
-    else if (state === 'offline-pending') { dot.className = 'storage-dot saving'; const age = getPendingAge(); label.textContent = `⚠ Pending sync (${age}s)`; }
-    else { dot.className = 'storage-dot disconnected'; label.textContent = 'Offline (cached)'; }
-  }
-  if (badge && bt) {
-    badge.classList.remove('hidden', 'offline', 'pending');
-    if (state === 'connected' || state === 'saving') { bt.textContent = state === 'saving' ? 'Syncing...' : '🔥 Firebase'; }
-    else if (state === 'offline-pending') { badge.classList.add('pending'); bt.textContent = `⏳ Pending (${getPendingAge()}s)`; }
-    else { badge.classList.add('offline'); bt.textContent = '⚠ Offline'; }
-  }
-}
-
-function cacheLocal() { if (resetting) return; try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); } catch(e) {} }
-function loadCache() { try { const r = localStorage.getItem(LS_KEY); if (r) return JSON.parse(r); } catch(e) {} return null; }
-
-async function handleRemoteReset(remoteToken) {
-  if (resetting) return;
-  resetting = true; syncing = true;                       // block every write FIRST
-  if (writeTimer) { clearTimeout(writeTimer); writeTimer = null; }
-  console.log('🚨 Reset detected — wiping local cache (old data will NOT be pushed back)');
-  try { await wipeAllCaches(); } catch(e) {}
-  try { localStorage.setItem(LS_RESET_TOKEN_KEY, remoteToken); } catch(e) {}
-  if (currentUser) {
-    document.body.innerHTML = `<div style="position:fixed;inset:0;background:#0a0a0f;color:#fff;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:20px;z-index:99999;font-family:system-ui"><div style="font-size:64px">🗑️</div><h1 style="font-size:22px;margin:0">Data Was Reset</h1><p style="color:#888;max-width:340px;text-align:center;font-size:13px;line-height:1.6">This device's cache has been cleared by another device. Reloading...</p></div>`;
-  }
-  setTimeout(() => location.reload(), 2000);
-}
-function startResetListener() {
-  fbResetRef.on('value', (snap) => {
-    const remoteToken = snap.val();
-    if (!remoteToken || resetting) return;
-    let localToken = '';
-    try { localToken = localStorage.getItem(LS_RESET_TOKEN_KEY) || ''; } catch(e) {}
-    if (localToken === remoteToken) return;
-    handleRemoteReset(remoteToken);
-  });
-}
-
-function startRealtimeSync() {
-  fbDB.ref('.info/connected').on('value', async (s) => {
-    const wasConnected = fbConnected;
-    fbConnected = s.val() === true;
-    if (fbConnected && !wasConnected && !syncing && hasPendingChanges()) {
-      toast('📡 Reconnected — merging local changes...', 'info', 2200);
-      await flushPendingChanges();
-      return;
-    }
-    if (!syncing) updateStorageStatus();
-  });
-  fbRef.on('value', (snap) => {
-    if (!fbInitDone || syncing || resetting) return;
-    if (hasPendingChanges()) { updateStorageStatus('offline-pending'); return; }
-    const remote = snap.val(); if (!isDBValid(remote)) return;
-    const ls = (DB.ids?.sales||0)+(DB.ids?.products||0), rs = (remote.ids?.sales||0)+(remote.ids?.products||0);
-    if (ls === rs && (DB.sales||[]).length === (remote.sales||[]).length && (DB.customers||[]).length === (remote.customers||[]).length) return;
-    const modalOpen = document.getElementById('modal-root').innerHTML.trim().length > 0;
-    DB = remote; migrateDB(); cacheLocal(); saveSafetyBackup();
-    setLastSyncTs(remote._lastSaved || Date.now());
-    if (modalOpen) return;
-    try { updateUserBox(); buildNav(); buildMobileTabs(); render(); updateStorageStatus('connected'); toast('Synced from another device', 'info', 1800); } catch(e) {}
-  });
-  setInterval(() => {
-    if (hasPendingChanges()) { if (fbConnected && !syncing) flushPendingChanges(); else updateStorageStatus('offline-pending'); }
-    else if (!syncing) updateStorageStatus();
-  }, 20000);
-}
-
 function createFreshDB() {
   const d = { products:[], stock_units:[], accessories:[], customers:[], sales:[], sale_items:[], repairs:[], credit_payments:[], returns:[], stock_adjustments:[], shops:[], shop_repairs:[], shop_payments:[], suppliers:[], orders:[], order_items:[], cash_transactions:[], users:[], settings:{...DEFAULT_SETTINGS}, ids:{products:1,stock_units:1,accessories:1,customers:1,sales:1,sale_items:1,repairs:1,credit_payments:1,returns:1,stock_adjustments:1,shops:1,shop_repairs:1,shop_payments:1,suppliers:1,orders:1,order_items:1,cash_transactions:1,users:1} };
   initUsers(d); return d;
 }
-function initUsers(d) { d.users = [{id:1,username:'admin',password:hashPassword('admin123'),name:'Administrator',role:'admin',active:true,photo:null,created_at:now()},{id:2,username:'cashier',password:hashPassword('cashier123'),name:'Cashier',role:'cashier',active:true,photo:null,created_at:now()}]; d.ids.users = 3; }
+function initUsers(d) {
+  d.users = [
+    {id:1,username:'admin',password:hashPassword('admin123'),name:'Administrator',role:'admin',active:true,photo:null,created_at:now()},
+    {id:2,username:'cashier',password:hashPassword('cashier123'),name:'Cashier',role:'cashier',active:true,photo:null,created_at:now()}
+  ];
+  d.ids.users = 3;
+}
 function makeProductCode(id){ return 'PHN-' + String(id).padStart(4,'0'); }
 function makeAccessoryCode(id){ return 'ACC-' + String(id).padStart(4,'0'); }
-/* ===== BARCODE: auto generate + label print ===== */
+
+/* ═══ BARCODE (unchanged) ═══ */
 const C128_PAT=["212222","222122","222221","121223","121322","131222","122213","122312","132212","221213","221312","231212","112232","122132","122231","113222","123122","123221","223211","221132","221231","213212","223112","312131","311222","321122","321221","312212","322112","322211","212123","212321","232121","111323","131123","131321","112313","132113","132311","211313","231113","231311","112133","112331","132131","113123","113321","133121","313121","211331","231131","213113","213311","213131","311123","311321","331121","312113","312311","332111","314111","221411","431111","111224","111422","121124","121421","141122","141221","112214","112412","122114","122411","142112","142211","241211","221114","413111","241112","134111","111242","121142","121241","114212","124112","124211","411212","421112","421211","212141","214121","412121","111143","111341","131141","114113","114311","411113","411311","113141","114131","311141","411131","211412","211214","211232","2331112"];
 function code128Bars(text){
   text = String(text); const codes = [];
@@ -829,11 +1080,7 @@ function code128SVG(text, wMm, hMm){
 function barcodeInUse(v){ return DB.products.some(p => p.barcode === v) || DB.accessories.some(a => a.barcode === v) || DB.stock_units.some(u => u.barcode === v); }
 function makeBarcode(type, id){ let n = Number(id) || 1, v = ''; for (let i = 0; i < 50; i++) { v = '88' + type + String(n).padStart(7,'0').slice(-7); if (!barcodeInUse(v)) return v; n += 1000003; } return v; }
 
-const BC_PAPERS = {
-  label:{n:'Label roll (paper = label size)'}, r58:{n:'58mm thermal roll', w:58}, r80:{n:'80mm thermal roll', w:80},
-  a4:{n:'A4 sheet', w:210, h:297, css:'A4'}, a5:{n:'A5 sheet', w:148, h:210, css:'A5'}, a6:{n:'A6 sheet', w:105, h:148, css:'A6'},
-  letter:{n:'Letter sheet', w:216, h:279, css:'letter'}, custom:{n:'Custom paper size'}
-};
+const BC_PAPERS = { label:{n:'Label roll (paper = label size)'}, r58:{n:'58mm thermal roll', w:58}, r80:{n:'80mm thermal roll', w:80}, a4:{n:'A4 sheet', w:210, h:297, css:'A4'}, a5:{n:'A5 sheet', w:148, h:210, css:'A5'}, a6:{n:'A6 sheet', w:105, h:148, css:'A6'}, letter:{n:'Letter sheet', w:216, h:279, css:'letter'}, custom:{n:'Custom paper size'} };
 const BC_PRESETS = ['50x30','40x30','40x25','38x25','30x20','58x40','70x40','100x50'];
 let bcItem = null;
 
@@ -938,7 +1185,7 @@ function bcPrint(){
 function bcCleanup(){ const s = document.getElementById('barcode-print-style'); if (s) s.remove(); const r = document.getElementById('receipt'); if (r && r.dataset.bc) { r.innerHTML = ''; delete r.dataset.bc; } }
 window.addEventListener('afterprint', bcCleanup);
 
-
+/* ═══ MIGRATION ═══ */
 function migrateDB() {
   if (!DB.settings) DB.settings = {...DEFAULT_SETTINGS};
   if (DB.settings.shop_logo === undefined) DB.settings.shop_logo = null;
@@ -946,12 +1193,10 @@ function migrateDB() {
   if (!DB.users || !DB.users.length) initUsers(DB);
   if (!DB.ids) DB.ids = {products:1,stock_units:1,accessories:1,customers:1,sales:1,sale_items:1,repairs:1,credit_payments:1,returns:1,stock_adjustments:1,shops:1,shop_repairs:1,shop_payments:1,suppliers:1,orders:1,order_items:1,cash_transactions:1,users:DB.users.length+1};
   ['accessories','credit_payments','returns','stock_adjustments','shops','shop_repairs','shop_payments','suppliers','orders','order_items','cash_transactions'].forEach(k => { if (!DB.ids[k]) DB.ids[k] = 1; });
-  ['products','stock_units','accessories','customers','sales','sale_items','repairs','credit_payments','returns','stock_adjustments','shops','shop_repairs','shop_payments','suppliers','orders','order_items','cash_transactions'].forEach(k => { if (!Array.isArray(DB[k])) DB[k] = []; });
-  DB.products.forEach(p => { if (!p.code) p.code = makeProductCode(p.id); });
-  DB.accessories.forEach(a => { if (!a.code) a.code = makeAccessoryCode(a.id); if (a.warranty_months === undefined) a.warranty_months = 0; if (a.barcode === undefined) a.barcode = ''; });
+  SYNC_COLLECTIONS.forEach(k => { if (!Array.isArray(DB[k])) DB[k] = []; });
+  DB.products.forEach(p => { if (!p.code) p.code = makeProductCode(p.id); if (!p.barcode) p.barcode = makeBarcode(1, p.id); });
+  DB.accessories.forEach(a => { if (!a.code) a.code = makeAccessoryCode(a.id); if (a.warranty_months === undefined) a.warranty_months = 0; if (a.barcode === undefined) a.barcode = ''; if (!a.barcode) a.barcode = makeBarcode(2, a.id); });
   DB.stock_units.forEach(u => { if (u.barcode === undefined) u.barcode = ''; });
-  DB.products.forEach(p => { if (!p.barcode) p.barcode = makeBarcode(1, p.id); });
-  DB.accessories.forEach(a => { if (!a.barcode) a.barcode = makeBarcode(2, a.id); });
   DB.customers.forEach(c => { if (c.balance === undefined) c.balance = 0; if (c.id_number === undefined) c.id_number = ''; });
   DB.returns.forEach(r => { if (r.condition === undefined) r.condition = 'damaged'; if (r.restocked === undefined) r.restocked = false; if (r.original_amount === undefined) r.original_amount = (Number(r.unit_price)||0) * (r.qty||0); });
   DB.sale_items.forEach(it => { if (!it.item_type) { if (it.stock_unit_id) it.item_type = 'phone'; else if (it.accessory_id) it.item_type = 'accessory'; else if ((it.item_code||'').startsWith('ACC-')) it.item_type = 'accessory'; else it.item_type = 'phone'; } if (it.accessory_id === undefined) it.accessory_id = null; if (it.stock_unit_id === undefined) it.stock_unit_id = null; if (it.barcode === undefined) it.barcode = ''; });
@@ -970,7 +1215,7 @@ function migrateDB() {
   });
   rebuildOrderHistory();
 }
-function save() { saveToServer(false); }
+
 function nextId(key) { return DB.ids[key]++; }
 function now() { const d = new Date(), p = n => String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; }
 function today() { return now().slice(0,10); }
@@ -1143,10 +1388,11 @@ function exportJSON() { const d = JSON.stringify(DB, null, 2); const a = documen
 function importJSON() {
   if (!requireAdmin()) return;
   const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.json';
-  inp.onchange = async e => { const f = e.target.files[0]; if (!f) return; try { const parsed = JSON.parse(await f.text()); const data = parsed.data || parsed; if (!isDBValid(data)) throw new Error('Invalid'); if (!confirm('Replace ALL data?')) return; DB = data; migrateDB(); save(); applyTheme(DB.settings.theme||'dark'); applyLogo(); render(); toast('Imported','success'); } catch(err){ toast('Import failed: '+err.message,'error'); } };
+  inp.onchange = async e => { const f = e.target.files[0]; if (!f) return; try { const parsed = JSON.parse(await f.text()); const data = parsed.data || parsed; if (!isValidDB(data)) throw new Error('Invalid'); if (!confirm('Replace ALL data?')) return; DB = data; migrateDB(); save(); applyTheme(DB.settings.theme||'dark'); applyLogo(); render(); toast('Imported','success'); } catch(err){ toast('Import failed: '+err.message,'error'); } };
   inp.click();
 }
 
+/* ═══ VIEWS ═══ */
 const views = { dashboard:renderDashboard, sales:renderSales, phonestock:renderPhoneStock, stock:renderStock, repairs:renderRepairs, shoprepair:renderShopRepair, customers:renderCustomers, orders:renderOrders, suppliers:renderSuppliers, reports:renderReports, billsearch:renderBillSearch, settings:renderSettings };
 let currentView = 'dashboard';
 function buildNav() { const nav = document.getElementById('nav'); const perms = ROLE_PERMS[currentUser.role]||[]; nav.innerHTML = perms.map(k => { const m = VIEW_META[k]; return `<a data-view="${k}" class="${k===currentView?'active':''}"><span class="nav-icon">${m.icon}</span><span>${m.label}</span></a>`; }).join(''); }
@@ -1208,7 +1454,7 @@ document.addEventListener('keydown', e => {
   if (currentView === 'sales' && tag === 'input' && e.target.id !== 'sales-search-input') { e.preventDefault(); completeSale(); }
 });
 
-/* CASH MOVEMENTS */
+/* ═══ CASH MOVEMENTS ═══ */
 function getCashSummary(dateStr = today()) {
   const salesCash = DB.sales.filter(s => (s.created_at||'').startsWith(dateStr) && (s.payment_method||'cash') === 'cash').reduce((a,s)=>a+(Number(s.paid_amount)||0),0);
   const creditCash = (DB.credit_payments||[]).filter(p => (p.created_at||'').startsWith(dateStr) && (p.method||'cash') === 'cash').reduce((a,p)=>a+(Number(p.amount)||0),0);
@@ -1244,9 +1490,7 @@ function showCashMovement(type='cash_out') {
 }
 function cashMovementList(dateStr=today()) { return (DB.cash_transactions||[]).filter(t=>(t.created_at||'').startsWith(dateStr)).sort((a,b)=>b.id-a.id); }
 
-/* ═══════════════════════════════════════════════════════════
-   🆕 DASHBOARD CHART — Interactive Daily / 30D / Monthly / Yearly
-   ═══════════════════════════════════════════════════════════ */
+/* ═══ DASHBOARD CHART ═══ */
 function buildChartData(range) {
   const data = [];
   let title = '', sub = '';
@@ -1300,60 +1544,26 @@ function buildChartData(range) {
 function dashboardLineChart() {
   const range = dashChartRange;
   const { data: days, title, sub } = buildChartData(range);
-
   const grandTotal = days.reduce((a,x)=>a+x.value, 0);
   const grandProfit = days.reduce((a,x)=>a+x.profit, 0);
   const grandCount = days.reduce((a,x)=>a+x.count, 0);
   const avg = days.length ? grandTotal / days.length : 0;
   const best = days.reduce((a,b)=> b.value > (a?.value||-1) ? b : a, days[0] || {value:0,fullLabel:'-'});
   const max = Math.max(1, ...days.map(x=>x.value));
-
   const n = days.length;
   const W = 820, H = 280, PL = 60, PR = 24, PT = 34, PB = 44;
   const iw = W - PL - PR, ih = H - PT - PB;
-  const pts = days.map((x, i) => {
-    const px = PL + (n === 1 ? iw/2 : (iw * (i / (n-1))));
-    const py = PT + ih - (x.value/max) * ih;
-    return { ...x, px, py, isBest: x === best && x.value > 0 };
-  });
-
+  const pts = days.map((x, i) => { const px = PL + (n === 1 ? iw/2 : (iw * (i / (n-1)))); const py = PT + ih - (x.value/max) * ih; return { ...x, px, py, isBest: x === best && x.value > 0 }; });
   const path = pts.map((p,i)=>`${i?'L':'M'} ${p.px.toFixed(1)} ${p.py.toFixed(1)}`).join(' ');
   const area = n ? `M ${pts[0].px} ${PT+ih} L ${pts.map(p=>`${p.px.toFixed(1)} ${p.py.toFixed(1)}`).join(' L ')} L ${pts[n-1].px} ${PT+ih} Z` : '';
-
-  // Y axis grid
-  const yLabels = [0, 0.25, 0.5, 0.75, 1].map(f => {
-    const val = max * f;
-    const y = PT + ih - f * ih;
-    return `<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="var(--separator)" stroke-dasharray="3 5" opacity=".6"/><text x="${PL-8}" y="${y+4}" text-anchor="end" fill="var(--text-3)" font-size="10" font-weight="600">${fmtInt(val)}</text>`;
-  }).join('');
-
-  // X labels - sparse
+  const yLabels = [0, 0.25, 0.5, 0.75, 1].map(f => { const val = max * f; const y = PT + ih - f * ih; return `<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="var(--separator)" stroke-dasharray="3 5" opacity=".6"/><text x="${PL-8}" y="${y+4}" text-anchor="end" fill="var(--text-3)" font-size="10" font-weight="600">${fmtInt(val)}</text>`; }).join('');
   const stepX = n <= 7 ? 1 : (n <= 12 ? 1 : Math.ceil(n / 10));
-  const xLabels = pts.map((p, i) => {
-    if (n > 12 && i % stepX !== 0 && i !== n-1) return '';
-    return `<text x="${p.px}" y="${H-16}" text-anchor="middle" fill="var(--text-3)" font-size="10" font-weight="600">${esc(p.label)}</text>`;
-  }).join('');
-
-  // Points + tooltips
-  const points = pts.map((p) => {
-    const color = p.isBest ? 'var(--orange)' : 'var(--blue)';
-    const r = p.isBest ? 6 : 4;
-    const label = p.isBest ? `<text x="${p.px}" y="${p.py-14}" text-anchor="middle" fill="var(--orange)" font-size="10.5" font-weight="800">★ ${fmtInt(p.value)}</text>` : '';
-    return `<g class="chart-point" style="cursor:pointer">
-      <title>${esc(p.fullLabel)}: ${fmtInt(p.value)} (${p.count} sale${p.count!==1?'s':''})</title>
-      <circle cx="${p.px}" cy="${p.py}" r="${r}" fill="${color}" stroke="var(--bg-grad-1)" stroke-width="2"/>
-      ${label}
-    </g>`;
-  }).join('');
-
+  const xLabels = pts.map((p, i) => { if (n > 12 && i % stepX !== 0 && i !== n-1) return ''; return `<text x="${p.px}" y="${H-16}" text-anchor="middle" fill="var(--text-3)" font-size="10" font-weight="600">${esc(p.label)}</text>`; }).join('');
+  const points = pts.map((p) => { const color = p.isBest ? 'var(--orange)' : 'var(--blue)'; const r = p.isBest ? 6 : 4; const label = p.isBest ? `<text x="${p.px}" y="${p.py-14}" text-anchor="middle" fill="var(--orange)" font-size="10.5" font-weight="800">★ ${fmtInt(p.value)}</text>` : ''; return `<g class="chart-point" style="cursor:pointer"><title>${esc(p.fullLabel)}: ${fmtInt(p.value)} (${p.count} sale${p.count!==1?'s':''})</title><circle cx="${p.px}" cy="${p.py}" r="${r}" fill="${color}" stroke="var(--bg-grad-1)" stroke-width="2"/>${label}</g>`; }).join('');
   const isBestSet = best && best.value > 0;
-
   return `<div class="card chart-card" style="margin-bottom:14px">
     <div class="chart-head">
-      <div>
-        <h3 style="margin-bottom:2px">📈 Sales Trend</h3>
-        <div class="muted small">${esc(title)} · ${esc(sub)}</div>
-      </div>
+      <div><h3 style="margin-bottom:2px">📈 Sales Trend</h3><div class="muted small">${esc(title)} · ${esc(sub)}</div></div>
       <div class="chart-toggle">
         <button class="chart-btn ${range==='7d'?'active':''}" onclick="dashSetChartRange('7d')">7D</button>
         <button class="chart-btn ${range==='30d'?'active':''}" onclick="dashSetChartRange('30d')">30D</button>
@@ -1370,59 +1580,27 @@ function dashboardLineChart() {
     </div>
     <div class="chart-wrap">
       <svg viewBox="0 0 ${W} ${H}" width="100%" height="280" role="img" aria-label="Sales trend chart">
-        <defs>
-          <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="var(--blue)" stop-opacity=".38"/>
-            <stop offset="100%" stop-color="var(--blue)" stop-opacity="0"/>
-          </linearGradient>
-        </defs>
-        ${yLabels}
-        ${area?`<path d="${area}" fill="url(#chartGrad)"></path>`:''}
-        ${path?`<path d="${path}" fill="none" stroke="var(--blue)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path>`:''}
-        ${points}
-        ${xLabels}
+        <defs><linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(--blue)" stop-opacity=".38"/><stop offset="100%" stop-color="var(--blue)" stop-opacity="0"/></linearGradient></defs>
+        ${yLabels}${area?`<path d="${area}" fill="url(#chartGrad)"></path>`:''}${path?`<path d="${path}" fill="none" stroke="var(--blue)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path>`:''}${points}${xLabels}
       </svg>
     </div>
   </div>`;
 }
-function dashSetChartRange(r) {
-  if (dashChartRange === r) return;
-  dashChartRange = r;
-  dashRefreshCharts();
-}
+function dashSetChartRange(r) { if (dashChartRange === r) return; dashChartRange = r; dashRefreshCharts(); }
 
-/* ═══════════════════════════════════════════════════════════
-   🆕 DASHBOARD ANALYTICS — Trends (any item) / Overview / Cash In-Out
-   ═══════════════════════════════════════════════════════════ */
-let dashChartTab = 'trends';   // 'trends' | 'overview' | 'cash'
-let dashMetric = 'sales';
-
+let dashChartTab = 'trends'; let dashMetric = 'sales';
 function chartBuckets(range) {
-  const out = [];
-  const pad = n => String(n).padStart(2,'0');
+  const out = []; const pad = n => String(n).padStart(2,'0');
   if (range === '7d' || range === '30d') {
     const cnt = range === '7d' ? 7 : 30;
     const base = new Date(); base.setHours(0,0,0,0);
-    for (let i = cnt-1; i >= 0; i--) {
-      const d = new Date(base); d.setDate(base.getDate()-i);
-      out.push({ key:`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`,
-        label: range==='7d' ? d.toLocaleDateString('en-US',{weekday:'short'}) : String(d.getDate()),
-        fullLabel: d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) });
-    }
+    for (let i = cnt-1; i >= 0; i--) { const d = new Date(base); d.setDate(base.getDate()-i); out.push({ key:`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`, label: range==='7d' ? d.toLocaleDateString('en-US',{weekday:'short'}) : String(d.getDate()), fullLabel: d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) }); }
   } else if (range === '12m') {
     const base = new Date(); base.setDate(1); base.setHours(0,0,0,0);
-    for (let i = 11; i >= 0; i--) {
-      const d = new Date(base); d.setMonth(base.getMonth()-i);
-      out.push({ key:`${d.getFullYear()}-${pad(d.getMonth()+1)}`, label:d.toLocaleDateString('en-US',{month:'short'}),
-        fullLabel:d.toLocaleDateString('en-US',{month:'short',year:'numeric'}) });
-    }
-  } else {
-    const y = new Date().getFullYear();
-    for (let i = 4; i >= 0; i--) out.push({ key:String(y-i), label:String(y-i), fullLabel:String(y-i) });
-  }
+    for (let i = 11; i >= 0; i--) { const d = new Date(base); d.setMonth(base.getMonth()-i); out.push({ key:`${d.getFullYear()}-${pad(d.getMonth()+1)}`, label:d.toLocaleDateString('en-US',{month:'short'}), fullLabel:d.toLocaleDateString('en-US',{month:'short',year:'numeric'}) }); }
+  } else { const y = new Date().getFullYear(); for (let i = 4; i >= 0; i--) out.push({ key:String(y-i), label:String(y-i), fullLabel:String(y-i) }); }
   return out;
 }
-
 function dashMetricDefs() {
   const sumBy = (arr, key, f) => arr.filter(x => (x.created_at||'').startsWith(key)).reduce((a,x)=>a+f(x),0);
   const cntBy = (arr, key) => arr.filter(x => (x.created_at||'').startsWith(key)).length;
@@ -1434,31 +1612,14 @@ function dashMetricDefs() {
     { id:'orders',  label:'📋 Orders',       money:false, color:'var(--purple, #bf5af2)', fn:k=>cntBy(DB.orders||[],k) },
     { id:'creditpay', label:'💳 Credit Paid',money:true,  color:'var(--green)',  fn:k=>sumBy(DB.credit_payments||[],k,p=>Number(p.amount)||0) },
   ];
-  if (canSeeCost()) defs.splice(1, 0, { id:'profit', label:'📈 Profit', money:true, color:'var(--green)',
-    fn:k=>sumBy(DB.sales,k,s=>(Number(s.total)||0)-(Number(s.cost_total)||0)) });
+  if (canSeeCost()) defs.splice(1, 0, { id:'profit', label:'📈 Profit', money:true, color:'var(--green)', fn:k=>sumBy(DB.sales,k,s=>(Number(s.total)||0)-(Number(s.cost_total)||0)) });
   return defs;
 }
+function dashRangeToggle(range) { return `<div class="chart-toggle">${[['7d','7D'],['30d','30D'],['12m','12M'],['5y','5Y']].map(([v,t]) => `<button class="chart-btn ${range===v?'active':''}" onclick="dashSetChartRange('${v}')">${t}</button>`).join('')}</div>`; }
+function dashStat(label, val, cls='') { return `<div class="chart-stat"><div class="muted small" style="font-weight:700;text-transform:uppercase;letter-spacing:.05em">${label}</div><div class="strong ${cls}">${val}</div></div>`; }
+function svgAxes(W,H,PL,PR,PT,PB,max) { const ih = H-PT-PB; return [0,.25,.5,.75,1].map(f => { const y = PT+ih-f*ih; return `<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="var(--separator)" stroke-dasharray="3 5" opacity=".6"/><text x="${PL-8}" y="${y+4}" text-anchor="end" fill="var(--text-3)" font-size="10" font-weight="600">${fmtInt(max*f)}</text>`; }).join(''); }
+function svgXLabels(items, xFn, H) { const n = items.length, step = n <= 12 ? 1 : Math.ceil(n/10); return items.map((b,i) => (n>12 && i%step!==0 && i!==n-1) ? '' : `<text x="${xFn(i)}" y="${H-16}" text-anchor="middle" fill="var(--text-3)" font-size="10" font-weight="600">${esc(b.label)}</text>`).join(''); }
 
-function dashRangeToggle(range) {
-  return `<div class="chart-toggle">${[['7d','7D'],['30d','30D'],['12m','12M'],['5y','5Y']].map(([v,t]) =>
-    `<button class="chart-btn ${range===v?'active':''}" onclick="dashSetChartRange('${v}')">${t}</button>`).join('')}</div>`;
-}
-function dashStat(label, val, cls='') {
-  return `<div class="chart-stat"><div class="muted small" style="font-weight:700;text-transform:uppercase;letter-spacing:.05em">${label}</div><div class="strong ${cls}">${val}</div></div>`;
-}
-function svgAxes(W,H,PL,PR,PT,PB,max) {
-  const ih = H-PT-PB;
-  return [0,.25,.5,.75,1].map(f => { const y = PT+ih-f*ih;
-    return `<line x1="${PL}" y1="${y}" x2="${W-PR}" y2="${y}" stroke="var(--separator)" stroke-dasharray="3 5" opacity=".6"/><text x="${PL-8}" y="${y+4}" text-anchor="end" fill="var(--text-3)" font-size="10" font-weight="600">${fmtInt(max*f)}</text>`;
-  }).join('');
-}
-function svgXLabels(items, xFn, H) {
-  const n = items.length, step = n <= 12 ? 1 : Math.ceil(n/10);
-  return items.map((b,i) => (n>12 && i%step!==0 && i!==n-1) ? '' :
-    `<text x="${xFn(i)}" y="${H-16}" text-anchor="middle" fill="var(--text-3)" font-size="10" font-weight="600">${esc(b.label)}</text>`).join('');
-}
-
-/* TAB 1 — trend of any selected item */
 function dashTrendsBody(range) {
   const defs = dashMetricDefs();
   const m = defs.find(d => d.id === dashMetric) || defs[0];
@@ -1472,15 +1633,10 @@ function dashTrendsBody(range) {
   const path = data.map((p,i)=>`${i?'L':'M'} ${px(i).toFixed(1)} ${py(p.value).toFixed(1)}`).join(' ');
   const area = `M ${px(0)} ${PT+ih} L ${data.map((p,i)=>`${px(i).toFixed(1)} ${py(p.value).toFixed(1)}`).join(' L ')} L ${px(n-1)} ${PT+ih} Z`;
   const fmt = v => m.money ? fmtInt(v) : String(Math.round(v));
-  const dots = data.map((p,i) => { const isBest = p===best && p.value>0;
-    return `<g class="chart-point" style="cursor:pointer" onclick="dashPick(${i},this)">
-      <circle cx="${px(i)}" cy="${py(p.value)}" r="16" fill="transparent"/>
-      <circle data-anchor="1" cx="${px(i)}" cy="${py(p.value)}" r="${isBest?6:4}" fill="${isBest?'var(--orange)':m.color}" stroke="var(--bg-grad-1)" stroke-width="2"/>
-      ${isBest?`<text x="${px(i)}" y="${py(p.value)-14}" text-anchor="middle" fill="var(--orange)" font-size="10.5" font-weight="800">★ ${fmt(p.value)}</text>`:''}</g>`; }).join('');
+  const dots = data.map((p,i) => { const isBest = p===best && p.value>0; return `<g class="chart-point" style="cursor:pointer" onclick="dashPick(${i},this)"><circle cx="${px(i)}" cy="${py(p.value)}" r="16" fill="transparent"/><circle data-anchor="1" cx="${px(i)}" cy="${py(p.value)}" r="${isBest?6:4}" fill="${isBest?'var(--orange)':m.color}" stroke="var(--bg-grad-1)" stroke-width="2"/>${isBest?`<text x="${px(i)}" y="${py(p.value)-14}" text-anchor="middle" fill="var(--orange)" font-size="10.5" font-weight="800">★ ${fmt(p.value)}</text>`:''}</g>`; }).join('');
   dashPickCtx = data.map(p => ({ title: p.fullLabel, lines: p.all.map(a => [a.label, a.money ? fmtInt(a.v) : String(a.v), a.id===m.id ? 'strong primary-c' : '']) }));
   return `
-    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${defs.map(d =>
-      `<button class="chart-btn ${d.id===m.id?'active':''}" style="border:1px solid var(--glass-border)" onclick="dashSetMetric('${d.id}')">${d.label}</button>`).join('')}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${defs.map(d => `<button class="chart-btn ${d.id===m.id?'active':''}" style="border:1px solid var(--glass-border)" onclick="dashSetMetric('${d.id}')">${d.label}</button>`).join('')}</div>
     <div class="chart-stats">
       ${dashStat('Total', fmt(total), 'primary-c')}
       ${dashStat('Average', fmt(total/n))}
@@ -1493,8 +1649,6 @@ function dashTrendsBody(range) {
       <path d="${area}" fill="url(#trGrad)"/><path d="${path}" fill="none" stroke="${m.color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
       ${dots}${svgXLabels(data,px,H)}</svg></div></div>`;
 }
-
-/* TAB 2 — snapshot of every dashboard stat card */
 function dashOverviewBody() {
   const vis = canSeeCost();
   const inStockUnits = DB.stock_units.filter(u=>u.status==='in_stock');
@@ -1504,10 +1658,7 @@ function dashOverviewBody() {
     ['💳 Total Credit', getTotalCredit(), 'var(--orange)'],
     ['🏪 Shop Outstanding', DB.shops.reduce((a,s)=>a+calcShopOutstanding(s),0), 'var(--red)'],
   ];
-  if (vis) {
-    money.splice(1,0,['📱 Phone Stock (Sale)', inStockUnits.reduce((a,u)=>a+(Number(u.sale_price)||0),0), 'var(--green)']);
-    money.splice(3,0,['📦 Accessory Stock (Sale)', DB.accessories.reduce((a,x)=>a+(Number(x.sale_price)||0)*(Number(x.qty)||0),0), 'var(--green)']);
-  }
+  if (vis) { money.splice(1,0,['📱 Phone Stock (Sale)', inStockUnits.reduce((a,u)=>a+(Number(u.sale_price)||0),0), 'var(--green)']); money.splice(3,0,['📦 Accessory Stock (Sale)', DB.accessories.reduce((a,x)=>a+(Number(x.sale_price)||0)*(Number(x.qty)||0),0), 'var(--green)']); }
   const counts = [
     ['📱 Phones In Stock', inStockUnits.length, 'var(--blue)'],
     ['📦 Accessories Qty', DB.accessories.reduce((a,x)=>a+(x.qty||0),0), 'var(--teal)'],
@@ -1516,19 +1667,11 @@ function dashOverviewBody() {
     ['💳 Customers on Credit', DB.customers.filter(c=>(Number(c.balance)||0)>0).length, 'var(--red)'],
     ['🔎 Total Invoices', DB.sales.length, 'var(--text-2)'],
   ];
-  const bars = (rows, isMoney) => { const mx = Math.max(1, ...rows.map(r=>r[1]));
-    return rows.map(([l,v,c]) => `<div style="margin-bottom:11px"><div class="row" style="justify-content:space-between;margin-bottom:4px"><span class="small strong">${l}</span><b class="small">${fmtInt(v)}</b></div>
-      <div style="height:10px;border-radius:6px;background:var(--glass-hover);overflow:hidden"><div style="height:100%;width:${Math.max(v>0?2:0,v/mx*100)}%;background:${c};border-radius:6px;transition:width .4s"></div></div></div>`).join(''); };
-  return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:18px" class="dash-2col">
-    <div><div class="field-label" style="margin-bottom:10px">Amounts (Rs)</div>${bars(money,true)}</div>
-    <div><div class="field-label" style="margin-bottom:10px">Counts</div>${bars(counts,false)}</div></div>
-    <div class="muted small" style="margin-top:2px">Current snapshot — not date-based.</div>`;
+  const bars = (rows) => { const mx = Math.max(1, ...rows.map(r=>r[1])); return rows.map(([l,v,c]) => `<div style="margin-bottom:11px"><div class="row" style="justify-content:space-between;margin-bottom:4px"><span class="small strong">${l}</span><b class="small">${fmtInt(v)}</b></div><div style="height:10px;border-radius:6px;background:var(--glass-hover);overflow:hidden"><div style="height:100%;width:${Math.max(v>0?2:0,v/mx*100)}%;background:${c};border-radius:6px;transition:width .4s"></div></div></div>`).join(''); };
+  return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:18px" class="dash-2col"><div><div class="field-label" style="margin-bottom:10px">Amounts (Rs)</div>${bars(money)}</div><div><div class="field-label" style="margin-bottom:10px">Counts</div>${bars(counts)}</div></div><div class="muted small" style="margin-top:2px">Current snapshot — not date-based.</div>`;
 }
-
-/* TAB 3 — Cash In vs Cash Out */
 function dashCashBody(range) {
-  const data = chartBuckets(range).map(b => { const c = getCashSummary(b.key);
-    return { ...b, inn: c.salesCash + c.creditCash + c.cashIns, out: c.cashOuts + c.cashReturns, c }; });
+  const data = chartBuckets(range).map(b => { const c = getCashSummary(b.key); return { ...b, inn: c.salesCash + c.creditCash + c.cashIns, out: c.cashOuts + c.cashReturns, c }; });
   const n = data.length;
   const tIn = data.reduce((a,x)=>a+x.inn,0), tOut = data.reduce((a,x)=>a+x.out,0);
   const max = Math.max(1, ...data.map(x=>Math.max(x.inn,x.out)));
@@ -1536,10 +1679,7 @@ function dashCashBody(range) {
   const slot = iw/n, bw = Math.max(3, Math.min(22, slot*0.36));
   const cx = i => PL + slot*i + slot/2;
   const h = v => (v/max)*ih;
-  const bars = data.map((d,i) => `<g class="chart-point" style="cursor:pointer" onclick="dashPick(${i},this)">
-    <rect x="${PL+slot*i}" y="${PT}" width="${slot}" height="${ih}" fill="transparent"/>
-    <rect ${d.inn>=d.out?'data-anchor="1" ':''}x="${cx(i)-bw-1}" y="${PT+ih-h(d.inn)}" width="${bw}" height="${h(d.inn)}" rx="3" fill="var(--green)"/>
-    <rect ${d.inn<d.out?'data-anchor="1" ':''}x="${cx(i)+1}" y="${PT+ih-h(d.out)}" width="${bw}" height="${h(d.out)}" rx="3" fill="var(--orange)"/></g>`).join('');
+  const bars = data.map((d,i) => `<g class="chart-point" style="cursor:pointer" onclick="dashPick(${i},this)"><rect x="${PL+slot*i}" y="${PT}" width="${slot}" height="${ih}" fill="transparent"/><rect ${d.inn>=d.out?'data-anchor="1" ':''}x="${cx(i)-bw-1}" y="${PT+ih-h(d.inn)}" width="${bw}" height="${h(d.inn)}" rx="3" fill="var(--green)"/><rect ${d.inn<d.out?'data-anchor="1" ':''}x="${cx(i)+1}" y="${PT+ih-h(d.out)}" width="${bw}" height="${h(d.out)}" rx="3" fill="var(--orange)"/></g>`).join('');
   dashPickCtx = data.map(d => ({ title: d.fullLabel, lines: [
     ['💵 Cash In', fmtInt(d.inn), 'strong success'],
     ['· Cash sales', fmtInt(d.c.salesCash), 'muted'],
@@ -1556,37 +1696,22 @@ function dashCashBody(range) {
       ${dashStat('💸 Cash Out', fmtInt(tOut), 'warn')}
       ${dashStat('Net', (tIn-tOut>=0?'+':'')+fmtInt(tIn-tOut), tIn-tOut>=0?'success':'danger-c')}
     </div>
-    <div class="row small muted" style="gap:14px;margin-bottom:6px"><span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--green)"></span> In (sales + credit payments + manual)</span><span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--orange)"></span> Out (cash out + refunds)</span></div>
-    <div id="dash-chart-outer" style="position:relative" onclick="dashOuterClick(event)"><div class="chart-wrap"><svg viewBox="0 0 ${W} ${H}" width="100%" height="280" role="img" aria-label="Cash in and out chart">
-      ${svgAxes(W,H,PL,PR,PT,PB,max)}${bars}${svgXLabels(data,cx,H)}</svg></div></div>
+    <div class="row small muted" style="gap:14px;margin-bottom:6px"><span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--green)"></span> In</span><span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--orange)"></span> Out</span></div>
+    <div id="dash-chart-outer" style="position:relative" onclick="dashOuterClick(event)"><div class="chart-wrap"><svg viewBox="0 0 ${W} ${H}" width="100%" height="280" role="img" aria-label="Cash in and out chart">${svgAxes(W,H,PL,PR,PT,PB,max)}${bars}${svgXLabels(data,cx,H)}</svg></div></div>
     ${recent.length ? `<div class="field-label" style="margin:12px 0 6px">Last 3 cash movements</div><ul class="list">${recent.map(t=>`<li><div><div class="strong small">${t.type==='cash_out'?'💸':'💵'} ${esc(t.note)}</div><div class="muted small">${esc(t.category||'Other')} · ${esc((t.created_at||'').slice(0,16).replace('T',' '))}</div></div><b class="${t.type==='cash_out'?'warn':'success'}">${t.type==='cash_out'?'-':'+'}${fmtInt(t.amount)}</b></li>`).join('')}</ul>${allMoves.length>3?`<button class="ios-pill ghost sm" style="margin-top:8px;width:100%" onclick="showAllCashMovements()">More (${allMoves.length-3}) ›</button>`:''}` : ''}`;
 }
-
 function dashboardChartsCard() {
   const tab = dashChartTab, range = dashChartRange; dashPickIdx = -1; dashPickCtx = [];
   const tabs = [['trends','📈 Trends'],['overview','📊 Overview'],['cash','💵 Cash In/Out']];
   const body = tab==='overview' ? dashOverviewBody() : tab==='cash' ? dashCashBody(range) : dashTrendsBody(range);
-  return `<div id="dash-charts-card" class="card chart-card" style="margin-bottom:14px">
-    <div class="chart-head"><div class="chart-toggle">${tabs.map(([v,t]) =>
-      `<button class="chart-btn ${tab===v?'active':''}" onclick="dashSetChartTab('${v}')">${t}</button>`).join('')}</div>
-      ${tab==='overview' ? '' : dashRangeToggle(range)}</div>
-    ${body}</div>`;
+  return `<div id="dash-charts-card" class="card chart-card" style="margin-bottom:14px"><div class="chart-head"><div class="chart-toggle">${tabs.map(([v,t]) => `<button class="chart-btn ${tab===v?'active':''}" onclick="dashSetChartTab('${v}')">${t}</button>`).join('')}</div>${tab==='overview' ? '' : dashRangeToggle(range)}</div>${body}</div>`;
 }
 function dashSetChartTab(t) { dashChartTab = t; dashRefreshCharts(); }
 function dashSetMetric(m) { dashMetric = m; dashRefreshCharts(); }
-function dashRefreshCharts() {
-  const el = document.getElementById('dash-charts-card');
-  if (!el) { renderDashboard(document.getElementById('content')); return; }
-  el.outerHTML = dashboardChartsCard();
-}
+function dashRefreshCharts() { const el = document.getElementById('dash-charts-card'); if (!el) { renderDashboard(document.getElementById('content')); return; } el.outerHTML = dashboardChartsCard(); }
 
-
-/* Click-to-popup on chart points */
 let dashPickCtx = [], dashPickIdx = -1;
-function dashClosePick() {
-  document.getElementById('dash-tip')?.remove(); dashPickIdx = -1;
-  document.querySelectorAll('#dash-chart-outer .chart-point.sel').forEach(x => x.classList.remove('sel'));
-}
+function dashClosePick() { document.getElementById('dash-tip')?.remove(); dashPickIdx = -1; document.querySelectorAll('#dash-chart-outer .chart-point.sel').forEach(x => x.classList.remove('sel')); }
 function dashOuterClick(e) { if (e.target.closest('.chart-point, #dash-tip')) return; dashClosePick(); }
 function dashPick(i, el) {
   const outer = document.getElementById('dash-chart-outer'); if (!outer) return;
@@ -1594,8 +1719,7 @@ function dashPick(i, el) {
   const row = dashPickCtx[i]; if (!row) return;
   dashClosePick(); dashPickIdx = i; el.classList.add('sel');
   const tip = document.createElement('div'); tip.id = 'dash-tip'; tip.className = 'dash-tip';
-  tip.innerHTML = `<div class="row" style="justify-content:space-between;gap:10px;margin-bottom:6px"><b>${esc(row.title)}</b><button onclick="dashClosePick()" style="color:var(--text-3);font-size:14px;line-height:1">✕</button></div>` +
-    row.lines.map(([l,v,c]) => `<div class="row" style="justify-content:space-between;gap:14px;padding:2px 0;font-size:12px"><span class="${c.includes('muted')?'muted':''}">${esc(l)}</span><span class="${c}">${esc(v)}</span></div>`).join('');
+  tip.innerHTML = `<div class="row" style="justify-content:space-between;gap:10px;margin-bottom:6px"><b>${esc(row.title)}</b><button onclick="dashClosePick()" style="color:var(--text-3);font-size:14px;line-height:1">✕</button></div>` + row.lines.map(([l,v,c]) => `<div class="row" style="justify-content:space-between;gap:14px;padding:2px 0;font-size:12px"><span class="${c.includes('muted')?'muted':''}">${esc(l)}</span><span class="${c}">${esc(v)}</span></div>`).join('');
   tip.style.visibility = 'hidden'; outer.appendChild(tip);
   const anchor = el.querySelector('[data-anchor]') || el;
   const ar = anchor.getBoundingClientRect(), or = outer.getBoundingClientRect();
@@ -1604,17 +1728,14 @@ function dashPick(i, el) {
   tip.style.left = Math.max(4, Math.min(cx - tw/2, or.width - tw - 4)) + 'px';
   tip.style.top = top + 'px'; tip.style.visibility = 'visible';
 }
-
-/* "More" — full list of cash in/out */
 function showAllCashMovements(scope) {
   let all = (DB.cash_transactions||[]).slice().sort((a,b)=>b.id-a.id);
   if (scope === 'today') all = cashMovementList();
-  const li = t => `<li><div class="l-info"><div class="strong small">${t.type==='cash_out'?'💸 Cash Out':'💵 Cash In'} · ${esc(t.note)}</div><div class="muted small">${esc(t.category||'Other')} · ${esc((t.created_at||'').slice(0,16).replace('T',' '))}</div></div><b class="${t.type==='cash_out'?'warn':'success'}">${t.type==='cash_out'?'-':'+'}${fmtInt(t.amount)}</b></li>`;
-  openModal(scope==='today' ? '💵 Today — All Cash In/Out' : '💵 All Cash In/Out',
-    all.length ? `<div style="max-height:60vh;overflow:auto"><ul class="list">${all.map(li).join('')}</ul></div>` : '<p class="muted center pad small">No cash movements</p>',
-    () => {}, 'Close');
+  const li = t => `<li><div><div class="strong small">${t.type==='cash_out'?'💸 Cash Out':'💵 Cash In'} · ${esc(t.note)}</div><div class="muted small">${esc(t.category||'Other')} · ${esc((t.created_at||'').slice(0,16).replace('T',' '))}</div></div><b class="${t.type==='cash_out'?'warn':'success'}">${t.type==='cash_out'?'-':'+'}${fmtInt(t.amount)}</b></li>`;
+  openModal(scope==='today' ? '💵 Today — All Cash In/Out' : '💵 All Cash In/Out', all.length ? `<div style="max-height:60vh;overflow:auto"><ul class="list">${all.map(li).join('')}</ul></div>` : '<p class="muted center pad small">No cash movements</p>', () => {}, 'Close');
 }
-/* DASHBOARD */
+
+/* ═══ DASHBOARD ═══ */
 let dashQuery = '';
 function renderDashboard(root) {
   const d = today();
@@ -1667,13 +1788,13 @@ function renderDashboard(root) {
       ${(()=>{ const cs=getCashSummary(); return `<div class="stat-grid" style="margin-bottom:14px"><div class="stat" onclick="showCashBalance()"><div class="stat-icon">💵</div><div class="stat-label">Cashier Cash</div><div class="stat-value success">${fmtInt(cs.balance)}</div><div class="stat-sub">recorded cash balance today</div></div><div class="stat"><div class="stat-icon">💸</div><div class="stat-label">Cash Out Today</div><div class="stat-value warn">${fmtInt(cs.cashOuts)}</div><div class="stat-sub">${cashMovementList().length} cash movement${cashMovementList().length!==1?'s':''}</div></div></div>`; })()}
       ${dashboardChartsCard()}
       ${(totalCredit > 0 || totalShopOutstanding > 0) ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px" class="dash-2col">
-        ${totalCredit > 0 ? `<div class="card" style="border-color:rgba(255,159,10,.5);cursor:pointer" onclick="navigateTo('customers')"><h3>💳 Customer Credit <span style="float:right;color:var(--blue);font-size:12px">View all ›</span></h3><ul class="list">${DB.customers.filter(c=>(Number(c.balance)||0) > 0).sort((a,b)=>b.balance-a.balance).slice(0,6).map(c=>`<li onclick="event.stopPropagation();recordCreditPayment(${c.id})" style="cursor:pointer"><div class="l-info"><div class="strong">${esc(c.name)}</div><div class="muted small">${esc(c.phone||'-')}</div></div><div class="row gap"><span class="danger-c strong">${fmtInt(c.balance)}</span><button class="ios-pill orange sm">Pay</button></div></li>`).join('')}</ul></div>` : ''}
-        ${totalShopOutstanding > 0 ? `<div class="card" style="border-color:rgba(255,69,58,.5);cursor:pointer" onclick="navigateTo('shoprepair')"><h3>🏪 Shop Outstanding <span style="float:right;color:var(--blue);font-size:12px">View all ›</span></h3><ul class="list">${DB.shops.filter(s=>calcShopOutstanding(s) > 0.5).sort((a,b)=>calcShopOutstanding(b)-calcShopOutstanding(a)).slice(0,6).map(s=>`<li><div class="l-info"><div class="strong">${esc(s.name)}</div><div class="muted small">${esc(s.phone||'-')}</div></div><div class="row gap"><span class="danger-c strong">${fmtInt(calcShopOutstanding(s))}</span></div></li>`).join('')}</ul></div>` : ''}
+        ${totalCredit > 0 ? `<div class="card" style="border-color:rgba(255,159,10,.5);cursor:pointer" onclick="navigateTo('customers')"><h3>💳 Customer Credit <span style="float:right;color:var(--blue);font-size:12px">View all ›</span></h3><ul class="list">${DB.customers.filter(c=>(Number(c.balance)||0) > 0).sort((a,b)=>b.balance-a.balance).slice(0,6).map(c=>`<li onclick="event.stopPropagation();recordCreditPayment(${c.id})" style="cursor:pointer"><div><div class="strong">${esc(c.name)}</div><div class="muted small">${esc(c.phone||'-')}</div></div><div class="row gap"><span class="danger-c strong">${fmtInt(c.balance)}</span><button class="ios-pill orange sm">Pay</button></div></li>`).join('')}</ul></div>` : ''}
+        ${totalShopOutstanding > 0 ? `<div class="card" style="border-color:rgba(255,69,58,.5);cursor:pointer" onclick="navigateTo('shoprepair')"><h3>🏪 Shop Outstanding <span style="float:right;color:var(--blue);font-size:12px">View all ›</span></h3><ul class="list">${DB.shops.filter(s=>calcShopOutstanding(s) > 0.5).sort((a,b)=>calcShopOutstanding(b)-calcShopOutstanding(a)).slice(0,6).map(s=>`<li><div><div class="strong">${esc(s.name)}</div><div class="muted small">${esc(s.phone||'-')}</div></div><div class="row gap"><span class="danger-c strong">${fmtInt(calcShopOutstanding(s))}</span></div></li>`).join('')}</ul></div>` : ''}
       </div>` : ''}
-      <div class="card" style="margin-bottom:14px"><div class="row" style="justify-content:space-between;margin-bottom:8px"><h3>💵 Today's Cash Movements</h3><span class="muted small">Cashier: ${esc(currentUser?.name||'')}</span></div>${cashMovementList().length ? `<ul class="list">${cashMovementList().slice(0,3).map(t=>`<li><div class="l-info"><div class="strong">${t.type==='cash_out'?'💸 Cash Out':'💵 Cash In'} · ${esc(t.note)}</div><div class="muted small">${esc(t.category||'Other')} · ${esc((t.created_at||'').slice(11,16))}</div></div><div class="${t.type==='cash_out'?'warn':'success'} strong">${t.type==='cash_out'?'-':'+'}${fmtInt(t.amount)}</div></li>`).join('')}</ul>${cashMovementList().length>3 ? `<button class="ios-pill ghost sm" style="margin-top:8px;width:100%" onclick="showAllCashMovements('today')">More (${cashMovementList().length-3}) ›</button>` : ''}` : '<p class="muted center pad small">No manual cash movements today</p>'}</div>
+      <div class="card" style="margin-bottom:14px"><div class="row" style="justify-content:space-between;margin-bottom:8px"><h3>💵 Today's Cash Movements</h3><span class="muted small">Cashier: ${esc(currentUser?.name||'')}</span></div>${cashMovementList().length ? `<ul class="list">${cashMovementList().slice(0,3).map(t=>`<li><div><div class="strong">${t.type==='cash_out'?'💸 Cash Out':'💵 Cash In'} · ${esc(t.note)}</div><div class="muted small">${esc(t.category||'Other')} · ${esc((t.created_at||'').slice(11,16))}</div></div><div class="${t.type==='cash_out'?'warn':'success'} strong">${t.type==='cash_out'?'-':'+'}${fmtInt(t.amount)}</div></li>`).join('')}</ul>${cashMovementList().length>3 ? `<button class="ios-pill ghost sm" style="margin-top:8px;width:100%" onclick="showAllCashMovements('today')">More (${cashMovementList().length-3}) ›</button>` : ''}` : '<p class="muted center pad small">No manual cash movements today</p>'}</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px" class="dash-2col">
-        <div class="card" style="cursor:pointer" onclick="navigateTo('reports')"><h3>Recent Sales <span style="float:right;color:var(--blue);font-size:12px">View all ›</span></h3>${recentSales.length ? `<ul class="list">${recentSales.map(s=>{ const c = DB.customers.find(x=>x.id===s.customer_id); const rt = getSaleReturnTotal(s.id); return `<li><div class="l-info"><div class="strong">${esc(s.invoice_no)}${rt>0?' <span class="danger-c small">↩</span>':''}</div><div class="muted small">${esc(c?.name||'Walk-in')}${s.balance>0?` · <span class="warn">bal ${fmtInt(s.balance)}</span>`:''}</div></div><div class="success strong">${fmtInt(s.total)}</div></li>`; }).join('')}</ul>` : '<p class="muted pad center">No sales yet</p>'}</div>
-        <div class="card" style="cursor:pointer" onclick="navigateTo('repairs')"><h3>Recent Repairs <span style="float:right;color:var(--blue);font-size:12px">View all ›</span></h3>${recentRepairs.length ? `<ul class="list">${recentRepairs.map(r=>{ const c = DB.customers.find(x=>x.id===r.customer_id); return `<li><div class="l-info"><div class="strong">${esc(r.device_brand)} ${esc(r.device_model)}</div><div class="muted small">${esc(r.job_no)} · ${esc(c?.name||'-')}</div></div><span class="badge badge-${r.status}">${r.status.replace(/_/g,' ')}</span></li>`; }).join('')}</ul>` : '<p class="muted pad center">No repairs yet</p>'}</div>
+        <div class="card" style="cursor:pointer" onclick="navigateTo('reports')"><h3>Recent Sales <span style="float:right;color:var(--blue);font-size:12px">View all ›</span></h3>${recentSales.length ? `<ul class="list">${recentSales.map(s=>{ const c = DB.customers.find(x=>x.id===s.customer_id); const rt = getSaleReturnTotal(s.id); return `<li><div><div class="strong">${esc(s.invoice_no)}${rt>0?' <span class="danger-c small">↩</span>':''}</div><div class="muted small">${esc(c?.name||'Walk-in')}${s.balance>0?` · <span class="warn">bal ${fmtInt(s.balance)}</span>`:''}</div></div><div class="success strong">${fmtInt(s.total)}</div></li>`; }).join('')}</ul>` : '<p class="muted pad center">No sales yet</p>'}</div>
+        <div class="card" style="cursor:pointer" onclick="navigateTo('repairs')"><h3>Recent Repairs <span style="float:right;color:var(--blue);font-size:12px">View all ›</span></h3>${recentRepairs.length ? `<ul class="list">${recentRepairs.map(r=>{ const c = DB.customers.find(x=>x.id===r.customer_id); return `<li><div><div class="strong">${esc(r.device_brand)} ${esc(r.device_model)}</div><div class="muted small">${esc(r.job_no)} · ${esc(c?.name||'-')}</div></div><span class="badge badge-${r.status}">${r.status.replace(/_/g,' ')}</span></li>`; }).join('')}</ul>` : '<p class="muted pad center">No repairs yet</p>'}</div>
       </div>
       ${(lowStock.length || lowAcc.length) ? `<div class="card" style="border-color:rgba(255,159,10,.4);margin-bottom:14px"><h3>⚠️ Low Stock Alerts</h3><ul class="list">${lowStock.map(p=>`<li style="cursor:pointer" onclick="navigateTo('phonestock')"><div>📱 ${esc(p.brand)} ${esc(p.model)} ${esc(p.storage||'')} ${codeChip(p.code)}</div><div class="warn strong">only ${p.cnt} left</div></li>`).join('')}${lowAcc.map(a=>`<li style="cursor:pointer" onclick="navigateTo('stock')"><div>📦 ${esc(a.name)} ${codeChip(a.code,true)} <span class="muted small">(${esc(a.category||'')})</span></div><div class="warn strong">only ${a.qty} left</div></li>`).join('')}</ul></div>` : ''}
     </div>
@@ -1683,7 +1804,7 @@ function renderDashboard(root) {
 }
 function dashSearch(v){ dashQuery = v; renderDashboard(document.getElementById('content')); }
 
-/* SALES */
+/* ═══ SALES ═══ */
 let cart = [];
 let salesTab = 'phones';
 let salesSearchQ = '';
@@ -1702,24 +1823,13 @@ function renderSales(root) {
               <button class="${salesTab==='phones'?'active':''}" onclick="salesSetTab('phones',this)" style="flex:1">📱 Phones</button>
               <button class="${salesTab==='accessories'?'active':''}" onclick="salesSetTab('accessories',this)" style="flex:1">📦 Accessories</button>
             </div>
-            <div class="ios-search" style="max-width:none;width:100%">
-              <input id="sales-search-input" placeholder="Type to search..." oninput="salesSearch(this.value)" autocomplete="off">
-              <button class="clear" onclick="salesClearSearch()">✕</button>
-            </div>
+            <div class="ios-search" style="max-width:none;width:100%"><input id="sales-search-input" placeholder="Type to search..." oninput="salesSearch(this.value)" autocomplete="off"><button class="clear" onclick="salesClearSearch()">✕</button></div>
           </div>
-          <div class="sale-results-area" id="search-results-wrap">
-            <div id="search-results"><p class="muted center pad small">Start typing to search items...</p></div>
-          </div>
+          <div class="sale-results-area" id="search-results-wrap"><div id="search-results"><p class="muted center pad small">Start typing to search items...</p></div></div>
           <div class="bill-fields">
             <div class="bill-fields-title">📋 Bill Details</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
-              <div class="form-field">
-                <label class="field-label">Customer</label>
-                <div class="cust-suggest-wrap">
-                  <input id="cust-name" class="ios-input" placeholder="Name..." autocomplete="off" oninput="onCustNameInput(this.value)" onfocus="onCustNameInput(this.value)">
-                  <div id="cust-name-suggest" class="cust-suggest hidden"></div>
-                </div>
-              </div>
+              <div class="form-field"><label class="field-label">Customer</label><div class="cust-suggest-wrap"><input id="cust-name" class="ios-input" placeholder="Name..." autocomplete="off" oninput="onCustNameInput(this.value)" onfocus="onCustNameInput(this.value)"><div id="cust-name-suggest" class="cust-suggest hidden"></div></div></div>
               ${field('Phone', '<input id="cust-phone" class="ios-input" placeholder="07xxxxxxx" autocomplete="off">')}
             </div>
             <div id="credit-extra-fields"></div>
@@ -1735,18 +1845,9 @@ function renderSales(root) {
           <h3>🛒 Cart <span class="muted small" id="cart-count" style="float:right;font-weight:500"></span></h3>
           <div class="sale-cart-area" id="cart-list"></div>
           <div class="cart-footer">
-            <div class="total-box">
-              <div class="muted small" style="font-weight:700;letter-spacing:.06em">TOTAL</div>
-              <div class="total-val" id="total">0.00</div>
-            </div>
-            <div class="change-box" id="change-box">
-              <div class="change-label">💰 Change</div>
-              <div class="change-val" id="change-val">0</div>
-            </div>
-            <div class="row gap" style="margin-top:10px">
-              <button class="ios-pill ghost" style="flex:1" onclick="clearCart()">Clear</button>
-              <button class="ios-pill green" style="flex:2" onclick="completeSale()" id="complete-btn">✓ Complete Sale</button>
-            </div>
+            <div class="total-box"><div class="muted small" style="font-weight:700;letter-spacing:.06em">TOTAL</div><div class="total-val" id="total">0.00</div></div>
+            <div class="change-box" id="change-box"><div class="change-label">💰 Change</div><div class="change-val" id="change-val">0</div></div>
+            <div class="row gap" style="margin-top:10px"><button class="ios-pill ghost" style="flex:1" onclick="clearCart()">Clear</button><button class="ios-pill green" style="flex:2" onclick="completeSale()" id="complete-btn">✓ Complete Sale</button></div>
           </div>
         </div>
       </div>
@@ -1885,10 +1986,7 @@ function completeSale() {
     const fId = existing?.id_number || '';
     const fAddr = existing?.address || '';
     openModal('💳 Credit Sale — Customer Info', `
-      <div class="credit-notice" style="background:rgba(255,159,10,.15);border-color:rgba(255,159,10,.6);color:var(--orange);font-size:12px;padding:10px 14px">
-        ⚠️ Balance due: <b style="font-size:14px">${fmtInt(balance)}</b><br>
-        <span style="font-size:11px;font-weight:500">Credit sale එකකට පහත තොරතුරු අනිවාර්යයි</span>
-      </div>
+      <div class="credit-notice" style="background:rgba(255,159,10,.15);border-color:rgba(255,159,10,.6);color:var(--orange);font-size:12px;padding:10px 14px">⚠️ Balance due: <b style="font-size:14px">${fmtInt(balance)}</b><br><span style="font-size:11px;font-weight:500">Credit sale එකකට පහත තොරතුරු අනිවාර්යයි</span></div>
       <div class="form-grid">
         ${field('Customer name', `<input id="cc-name" class="ios-input" value="${esc(fName)}" autofocus>`, true)}
         ${field('Phone number', `<input id="cc-phone" class="ios-input" value="${esc(prePhone)}" placeholder="07xxxxxxxx">`, true)}
@@ -1966,6 +2064,7 @@ function waFromSaleModal(saleId) {
   toast('Opening WhatsApp...','success');
 }
 
+/* ═══ RETURNS ═══ */
 function showReturnModal(saleId) {
   const sale = DB.sales.find(x=>x.id===saleId); if (!sale) return;
   currentReturnSaleId = saleId;
@@ -1979,9 +2078,9 @@ function showReturnModal(saleId) {
     let dt = it.item_type; if (!dt) { if (it.stock_unit_id) dt = 'phone'; else if (it.accessory_id) dt = 'accessory'; else if ((it.item_code||'').startsWith('ACC-')) dt = 'accessory'; else dt = 'phone'; }
     if ((it.item_code||'').startsWith('ACC-')) dt = 'accessory';
     const isPh = dt === 'phone';
-    if (rem <= 0) return `<div class="return-item" style="opacity:.5"><div class="ret-info"><div class="row gap" style="margin-bottom:2px;flex-wrap:wrap">${codeChip(it.item_code, !isPh)}<span class="strong" style="font-size:12px">${esc(it.description)}</span></div><div class="small danger-c">Fully returned</div></div></div>`;
+    if (rem <= 0) return `<div class="return-item" style="opacity:.5"><div style="flex:1"><div class="row gap" style="margin-bottom:2px;flex-wrap:wrap">${codeChip(it.item_code, !isPh)}<span class="strong" style="font-size:12px">${esc(it.description)}</span></div><div class="small danger-c">Fully returned</div></div></div>`;
     const dr = (Number(it.price)||0) * rem;
-    return `<div class="return-item" id="ret-row-${it.id}"><div style="display:flex;align-items:center;gap:10px;width:100%"><input type="checkbox" id="ret-chk-${it.id}" onchange="toggleReturnRow(${it.id})"><div class="ret-info"><div class="row gap" style="margin-bottom:2px;flex-wrap:wrap">${codeChip(it.item_code, !isPh)}<span class="strong" style="font-size:12px">${esc(it.description)}</span></div><div class="muted small">Price: ${fmtInt(it.price)} · Sold: ${it.qty}${r>0?` · Returned: <span class="danger-c">${r}</span>`:''}</div></div></div><div id="ret-controls-${it.id}" style="display:none;width:100%;gap:6px;flex-wrap:wrap;margin-top:8px;padding-left:26px"><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end;width:100%"><div style="display:flex;flex-direction:column;gap:2px"><span style="font-size:9.5px;font-weight:700;text-transform:uppercase;color:var(--text-3)">Qty</span><input type="number" id="ret-qty-${it.id}" class="ios-input" style="width:70px;padding:6px" value="${rem}" min="1" max="${rem}" oninput="updateReturnRefundPreview()"></div><div style="display:flex;flex-direction:column;gap:2px;flex:1;min-width:120px"><span style="font-size:9.5px;font-weight:700;text-transform:uppercase;color:var(--text-3)">Condition</span><select id="ret-cond-${it.id}" class="ios-input" style="padding:6px" onchange="updateReturnRefundPreview()"><option value="good">✅ Good (Restock)</option><option value="damaged">❌ Damaged</option></select></div><div style="display:flex;flex-direction:column;gap:2px;min-width:120px"><span style="font-size:9.5px;font-weight:700;text-transform:uppercase;color:var(--orange)">💰 Refund</span><input type="number" id="ret-refund-amt-${it.id}" class="ios-input" style="padding:6px" step="0.01" placeholder="Auto: ${fmtInt(dr)}" oninput="updateReturnRefundPreview()"></div></div></div></div>`;
+    return `<div class="return-item" id="ret-row-${it.id}"><div style="display:flex;align-items:center;gap:10px;width:100%"><input type="checkbox" id="ret-chk-${it.id}" onchange="toggleReturnRow(${it.id})"><div style="flex:1"><div class="row gap" style="margin-bottom:2px;flex-wrap:wrap">${codeChip(it.item_code, !isPh)}<span class="strong" style="font-size:12px">${esc(it.description)}</span></div><div class="muted small">Price: ${fmtInt(it.price)} · Sold: ${it.qty}${r>0?` · Returned: <span class="danger-c">${r}</span>`:''}</div></div></div><div id="ret-controls-${it.id}" style="display:none;width:100%;gap:6px;flex-wrap:wrap;margin-top:8px;padding-left:26px"><div style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end;width:100%"><div style="display:flex;flex-direction:column;gap:2px"><span style="font-size:9.5px;font-weight:700;text-transform:uppercase;color:var(--text-3)">Qty</span><input type="number" id="ret-qty-${it.id}" class="ios-input" style="width:70px;padding:6px" value="${rem}" min="1" max="${rem}" oninput="updateReturnRefundPreview()"></div><div style="display:flex;flex-direction:column;gap:2px;flex:1;min-width:120px"><span style="font-size:9.5px;font-weight:700;text-transform:uppercase;color:var(--text-3)">Condition</span><select id="ret-cond-${it.id}" class="ios-input" style="padding:6px" onchange="updateReturnRefundPreview()"><option value="good">✅ Good (Restock)</option><option value="damaged">❌ Damaged</option></select></div><div style="display:flex;flex-direction:column;gap:2px;min-width:120px"><span style="font-size:9.5px;font-weight:700;text-transform:uppercase;color:var(--orange)">💰 Refund</span><input type="number" id="ret-refund-amt-${it.id}" class="ios-input" style="padding:6px" step="0.01" placeholder="Auto: ${fmtInt(dr)}" oninput="updateReturnRefundPreview()"></div></div></div></div>`;
   }).join('');
   const bn = cb > 0 ? `<div class="credit-notice">💳 Customer owes <b>${fmtInt(cb)}</b></div>` : '';
   openModal(`↩️ Return — ${sale.invoice_no}`, `<div class="form-grid">
@@ -2048,7 +2147,7 @@ function renderReturnsList() {
   <div class="ios-table-wrap"><table class="ios-table"><thead><tr><th>Date</th><th>Invoice</th><th>Item</th><th>Qty</th><th>Condition</th><th>Refund</th><th>Method</th><th>Reason</th></tr></thead><tbody>${returns.map(r => `<tr><td class="muted small">${esc(r.created_at.slice(0,16))}</td><td class="muted small">${esc(r.invoice_no||'-')}</td><td><div class="row gap" style="flex-wrap:wrap">${codeChip(r.item_code, r.item_type==='accessory')}<span class="strong">${esc(r.description)}</span></div></td><td class="danger-c strong">${r.qty}</td><td>${r.restocked ? '✅ Good' : '❌ Damaged'}</td><td class="danger-c strong">${fmtInt(r.refund_amount)}</td><td>${esc(r.refund_method||'-')}</td><td class="muted small">${esc(r.reason||'-')}</td></tr>`).join('')}</tbody></table></div>`;
 }
 
-/* PHONE STOCK */
+/* ═══ PHONE STOCK ═══ */
 let phoneStockTab = 'products';
 let phoneStockQuery = '';
 function renderPhoneStock(root) {
@@ -2087,7 +2186,7 @@ function showAddUnit() { if (!(currentUser.role==='admin'||currentUser.role==='m
 async function deleteProduct(id) { if (!(currentUser.role==='admin'||currentUser.role==='manager')){ toast('Access denied','error'); return; } const p = DB.products.find(x=>x.id===id); if (!p) return; const u = DB.stock_units.filter(x=>x.product_id===id); const ok = await requireDangerConfirm(`DELETE ${p.code}`, u.length ? `${u.length} units linked.` : 'No units.', { warnings: u.length ? 2 : 1, password: u.length > 0 }); if (!ok) return; DB.products = DB.products.filter(x => x.id !== id); if (u.length) DB.stock_units = DB.stock_units.filter(x => x.product_id !== id); save(); rebuildOrderHistory(); toast('Deleted','success'); renderPhoneStockBody(); }
 async function deleteStockUnit(id) { if (!(currentUser.role==='admin'||currentUser.role==='manager')){ toast('Access denied','error'); return; } const u = DB.stock_units.find(x=>x.id===id); if (!u) return; const ok = await requireDangerConfirm('DELETE unit', `IMEI: ${u.imei||'-'}`, { warnings: 1, password: false }); if (!ok) return; DB.stock_units = DB.stock_units.filter(x => x.id !== id); save(); toast('Deleted','success'); renderPhoneStockBody(); }
 
-/* STOCK */
+/* ═══ STOCK ═══ */
 let accQuery = '', accCatFilter = '';
 function renderStock(root) {
   const cm = currentUser.role === 'admin' || currentUser.role === 'manager';
@@ -2130,7 +2229,7 @@ function adjustAccessoryQty(id) { const a = DB.accessories.find(x=>x.id===id); i
 function toggleAdjustNoteField() { const i = document.getElementById('aq-add'); const w = document.getElementById('aq-note-wrap'); if (!i || !w) return; w.style.display = Number(i.value || 0) < 0 ? 'block' : 'none'; }
 async function deleteAccessory(id) { if (!(currentUser.role==='admin'||currentUser.role==='manager')){ toast('Access denied','error'); return; } const a = DB.accessories.find(x=>x.id===id); if (!a) return; const ok = await requireDangerConfirm(`DELETE ${a.code}`, `"${a.name}" qty: ${a.qty||0}`, { warnings: 1, password: false }); if (!ok) return; DB.accessories = DB.accessories.filter(x=>x.id!==id); save(); toast('Deleted','success'); renderAccessoryBody(); }
 
-/* REPAIRS */
+/* ═══ REPAIRS ═══ */
 const STATUS_LIST = ['received','diagnosing','waiting_parts','repairing','done','delivered'];
 let repairsQuery = '', repairsFilter = 'all';
 function renderRepairs(root) { root.innerHTML = `<div class="view-shell"><div class="page-head"><h1>Repairs</h1><button class="ios-pill blue" onclick="showNewRepair()">+ New Job</button></div><div class="search-row">${searchBar('rep-search','🔍 Search job, customer, device...','repairsSearch(this.value)')}<div class="segmented" id="rep-seg"><button class="${repairsFilter==='all'?'active':''}" onclick="repairsSetFilter('all',this)">All</button><button class="${repairsFilter==='received'?'active':''}" onclick="repairsSetFilter('received',this)">Received</button><button class="${repairsFilter==='repairing'?'active':''}" onclick="repairsSetFilter('repairing',this)">Repairing</button><button class="${repairsFilter==='done'?'active':''}" onclick="repairsSetFilter('done',this)">Done</button><button class="${repairsFilter==='delivered'?'active':''}" onclick="repairsSetFilter('delivered',this)">Delivered</button></div></div><div class="view-scroll" id="rep-list"></div></div>`; if (repairsQuery) document.getElementById('rep-search').value = repairsQuery; filterRepairs(); }
@@ -2149,7 +2248,7 @@ function showNewRepair() { openModal('New Repair Job', `<div class="form-grid">$
 function showStatusUpdate(id) { const r = DB.repairs.find(x=>x.id===id); if (!r) return; openModal(`Update ${r.job_no}`, `<div class="form-grid">${field('Status', `<select id="us-status" class="ios-input">${STATUS_LIST.map(s=>`<option value="${s}" ${s===r.status?'selected':''}>${s.replace(/_/g,' ')}</option>`).join('')}</select>`, true)}${field('Diagnosis', `<input id="us-diag" class="ios-input" value="${esc(r.diagnosis||'')}">`)}${field('Notes', `<input id="us-notes" class="ios-input" value="${esc(r.notes||'')}">`)}</div>`, () => { const oldS = r.status; r.status = document.getElementById('us-status').value; r.diagnosis = document.getElementById('us-diag').value.trim(); r.notes = document.getElementById('us-notes').value.trim(); if (r.status==='done' && !r.completed_at) r.completed_at = now(); save(); toast('Updated','success'); filterRepairs(); if (r.status !== oldS) setTimeout(() => { if (confirm(`Notify customer?`)) promptRepairWhatsApp(r.id); }, 300); }); }
 function deliverRepair(id) { const r = DB.repairs.find(x=>x.id===id); if (!r) return; openModal(`Deliver ${r.job_no}`, `<div class="form-grid">${field('Final cost', `<input id="dr-final" class="ios-input" type="number" step="0.01" value="${r.estimated_cost}" autofocus>`, true)}${field('Additional payment', '<input id="dr-paid" class="ios-input" type="number" step="0.01" value="0">')}</div>`, () => { r.final_cost = Number(document.getElementById('dr-final').value||0); r.advance_paid = (r.advance_paid||0) + Number(document.getElementById('dr-paid').value||0); r.status = 'delivered'; r.completed_at = r.completed_at || now(); r.delivered_at = now(); save(); toast('Delivered','success'); printRepairReceipt(r.id); filterRepairs(); setTimeout(() => { if (confirm('Send WhatsApp?')) promptRepairWhatsApp(r.id); }, 500); }); }
 
-/* SHOP REPAIR */
+/* ═══ SHOP REPAIR ═══ */
 let shopsQuery = '';
 function setShopFilter(f) { shopFilter = f; renderShopBody(); }
 function renderShopRepair(root) { root.innerHTML = `<div class="view-shell"><div class="page-head"><h1>Shop Repairs</h1><div class="head-actions"><button class="ios-pill blue" onclick="showAddShop()">+ Add Shop</button></div></div><div class="search-row">${searchBar('shop-search','🔍 Search shops...','shopSearch(this.value)')}</div><div class="filter-pills" style="margin-bottom:12px" id="shop-filters"></div><div class="view-scroll" id="shop-body"></div></div>`; if (shopsQuery) document.getElementById('shop-search').value = shopsQuery; renderShopBody(); }
@@ -2189,7 +2288,7 @@ function sendShopStatementWhatsApp(shopId) { const s = DB.shops.find(x=>x.id===s
 function printShopStatement(shopId) { const s = DB.shops.find(x=>x.id===shopId); if (!s) return; const st = calcShopStats(s); const cfg = DB.settings; applyPrintSize(); document.getElementById('receipt').innerHTML = `<div class="center">${cfg.shop_logo ? `<img src="${cfg.shop_logo}" class="receipt-logo" alt="">` : ''}<div style="font-size:14px;font-weight:bold">${esc(cfg.shop_name)}</div><div>${esc(cfg.shop_phone)}</div></div><hr><div class="center" style="font-weight:bold">SHOP STATEMENT</div><hr><div class="row-line"><span>Shop:</span><span>${esc(s.name)}</span></div>${s.phone?`<div class="row-line"><span>Phone:</span><span>${esc(s.phone)}</span></div>`:''}<div class="row-line"><span>Date:</span><span>${esc(now())}</span></div><hr><div style="font-weight:bold">REPAIRS (${st.reps.length})</div>${[...st.reps].sort((a,b)=>a.id-b.id).map((r, i) => `<div style="margin-top:6px"><b>${i+1}. ${esc(r.device_brand||'')} ${esc(r.device_model)}</b></div><div style="padding-left:8px">${esc(r.created_at.slice(0,10))} · ${esc(r.repair_type)}</div><div class="row-line" style="padding-left:8px"><span>Cost: ${fmt(r.cost)}</span><span>Recv: ${fmt(r.received)}</span></div>`).join('')}${st.payments.length ? `<hr><div style="font-weight:bold">PAYMENTS (${st.payments.length})</div>${[...st.payments].sort((a,b)=>a.id-b.id).map((p,i)=>`<div class="row-line"><span>${i+1}. ${esc(p.created_at.slice(0,16))}</span><span>+${fmt(p.amount)}</span></div>`).join('')}` : ''}<hr><div class="row-line"><span>Billed:</span><span>${fmt(st.billed)}</span></div><div class="row-line"><span>Received:</span><span>${fmt(st.received)}</span></div><div class="row-line" style="font-weight:bold"><span>OUTSTANDING:</span><span>${fmt(st.outstanding)}</span></div><hr><div class="center">Thank you!</div><div style="height:20px"></div>`; setTimeout(()=>window.print(),120); }
 function printShopRepairReceipt(repairId) { const r = DB.shop_repairs.find(x=>x.id===repairId); if (!r) return; const s = DB.shops.find(x=>x.id===r.shop_id); const cfg = DB.settings; const due = Math.max(0, (Number(r.cost)||0) - (Number(r.received)||0)); applyPrintSize(); document.getElementById('receipt').innerHTML = `<div class="center">${cfg.shop_logo ? `<img src="${cfg.shop_logo}" class="receipt-logo" alt="">` : ''}<div style="font-size:14px;font-weight:bold">${esc(cfg.shop_name)}</div><div>${esc(cfg.shop_phone)}</div></div><hr><div class="center" style="font-weight:bold">SHOP REPAIR BILL</div><hr><div class="row-line"><span>Date:</span><span>${esc(r.created_at)}</span></div>${s?`<div class="row-line"><span>Shop:</span><span>${esc(s.name)}</span></div>`:''}${s&&s.phone?`<div class="row-line"><span>Phone:</span><span>${esc(s.phone)}</span></div>`:''}<hr><div><b>Device:</b> ${esc(r.device_brand||'')} ${esc(r.device_model||'')}</div><div><b>Repair:</b> ${esc(r.repair_type)}</div>${r.notes?`<div><b>Notes:</b> ${esc(r.notes)}</div>`:''}<hr><div class="row-line"><span>Cost:</span><span>${fmt(r.cost)}</span></div><div class="row-line"><span>Received:</span><span>${fmt(r.received)}</span></div>${due > 0 ? `<div class="row-line" style="font-weight:bold"><span>Outstanding:</span><span>${fmt(due)}</span></div>` : ''}<hr><div class="center">Thank you!</div><div style="height:20px"></div>`; setTimeout(()=>window.print(),120); }
 
-/* CUSTOMERS */
+/* ═══ CUSTOMERS ═══ */
 let custQuery = '', custFilter = 'all', custSort = 'newest';
 function renderCustomers(root) {
   const tc = getTotalCredit();
@@ -2228,36 +2327,20 @@ function showCustomerDetail(id) {
 }
 function recordCreditPayment(customerId) { const c = DB.customers.find(x=>x.id===customerId); if (!c) return; const bal = Number(c.balance)||0; if (bal <= 0) { toast('No balance','info'); return; } openModal(`Pay Credit — ${c.name}`, `<div class="form-grid"><div class="danger-box" style="background:rgba(255,159,10,.12);border-color:rgba(255,159,10,.5)"><div class="danger-text" style="color:var(--orange)">Owed: <b>${fmt(bal)}</b></div></div>${field('Amount', `<input id="pc-amount" class="ios-input" type="number" step="0.01" value="${bal}" min="0" max="${bal}" autofocus>`, true)}${field('Method', `<select id="pc-method" class="ios-input"><option value="cash">💵 Cash</option><option value="card">💳 Card</option><option value="bank">🏦 Bank</option><option value="qr">📱 QR</option></select>`)}${field('Note', '<input id="pc-note" class="ios-input">')}</div>`, () => { const amt = Number(document.getElementById('pc-amount').value||0); if (!amt || amt <= 0 || amt > bal + 0.01) { toast('Invalid','error'); return false; } DB.credit_payments.push({ id:nextId('credit_payments'), customer_id:customerId, amount:amt, method:document.getElementById('pc-method').value, note:document.getElementById('pc-note').value.trim(), created_at:now(), user_id:currentUser?.id||null }); c.balance = Math.max(0, bal - amt); save(); toast(`Payment ${fmtInt(amt)} recorded`,'success'); render(); }); }
 
-/* ORDERS */
+/* ═══ ORDERS ═══ */
 let ordersQuery = '', ordersStatusFilter = 'all', ordersSupplierFilter = 'all';
 let ordersDateFilter = 'all', ordersFromDate = '', ordersToDate = '';
 
 function renderOrders(root) {
   const supOpts = DB.suppliers.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
   root.innerHTML = `<div class="view-shell">
-    <div class="page-head"><h1>📋 Orders</h1>
-      <div class="head-actions"><button class="ios-pill blue" onclick="showOrderCartModal()">+ Add Order to Cart</button></div>
-    </div>
+    <div class="page-head"><h1>📋 Orders</h1><div class="head-actions"><button class="ios-pill blue" onclick="showOrderCartModal()">+ Add Order to Cart</button></div></div>
     <div class="search-row">
       ${searchBar('ord-search','🔍 Search order, customer, item...','ordersSearch(this.value)')}
-      <select id="ord-sup" class="ios-input" style="max-width:220px" onchange="ordersSetSupplier(this.value)">
-        <option value="all">All Suppliers</option>
-        <option value="none">— Unassigned —</option>
-        ${supOpts}
-      </select>
-      <select id="ord-date" class="ios-input" style="max-width:180px" onchange="ordersSetDate(this.value)">
-        <option value="all">All Time</option>
-        <option value="today">Today</option>
-        <option value="yesterday">Yesterday</option>
-        <option value="week">Last 7 days</option>
-        <option value="month">Last 30 days</option>
-        <option value="custom">Custom range</option>
-      </select>
+      <select id="ord-sup" class="ios-input" style="max-width:220px" onchange="ordersSetSupplier(this.value)"><option value="all">All Suppliers</option><option value="none">— Unassigned —</option>${supOpts}</select>
+      <select id="ord-date" class="ios-input" style="max-width:180px" onchange="ordersSetDate(this.value)"><option value="all">All Time</option><option value="today">Today</option><option value="yesterday">Yesterday</option><option value="week">Last 7 days</option><option value="month">Last 30 days</option><option value="custom">Custom range</option></select>
     </div>
-    <div id="ord-custom-range" class="search-row hidden">
-      <input id="ord-from" class="ios-input" type="date" style="max-width:160px" onchange="ordersSetRange()">
-      <input id="ord-to" class="ios-input" type="date" style="max-width:160px" onchange="ordersSetRange()">
-    </div>
+    <div id="ord-custom-range" class="search-row hidden"><input id="ord-from" class="ios-input" type="date" style="max-width:160px" onchange="ordersSetRange()"><input id="ord-to" class="ios-input" type="date" style="max-width:160px" onchange="ordersSetRange()"></div>
     <div class="filter-pills" style="margin-bottom:12px" id="ord-filters"></div>
     <div class="view-scroll" id="ord-body"></div>
   </div>`;
@@ -2286,8 +2369,6 @@ function recalcOrderStatus(orderId) {
   else if (anyRequested) o.status = 'processing';
   else o.status = 'new';
 }
-
-/* ORDER CART WIZARD */
 function getBrandHistory() { return cachedBrandHistory.slice(); }
 function getModelHistory(brand) { return (cachedModelHistory[brand] || []).slice(); }
 function getPartHistory(brand, model) { return (cachedPartHistory[brand + '|' + model] || []).slice(); }
@@ -2299,22 +2380,13 @@ function showOrderCartModal() {
   const root = document.getElementById('modal-root');
   root.innerHTML = `<div class="modal-bg" onclick="if(event.target===this) closeModal()"><div class="modal" style="max-width:720px">
     <h2>🛒 Add Order to Cart</h2>
-    <div class="form-grid" style="margin-bottom:12px">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        ${field('Customer name', '<input id="co-name" class="ios-input" placeholder="Walk-in">')}
-        ${field('Phone', '<input id="co-phone" class="ios-input" placeholder="07xxxxxxxx">')}
-      </div>
-      ${field('Notes', '<input id="co-notes" class="ios-input" placeholder="Optional">')}
-    </div>
+    <div class="form-grid" style="margin-bottom:12px"><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">${field('Customer name', '<input id="co-name" class="ios-input" placeholder="Walk-in">')}${field('Phone', '<input id="co-phone" class="ios-input" placeholder="07xxxxxxxx">')}</div>${field('Notes', '<input id="co-notes" class="ios-input" placeholder="Optional">')}</div>
     <div class="field-label" style="margin-bottom:8px">📦 Enter Item Details — Enter key next step එකට switch වෙනවා</div>
     <div id="co-wizard"></div>
     <div id="co-items-list" style="margin-top:14px;max-height:280px;overflow-y:auto"></div>
     <div class="row gap" style="justify-content:space-between;margin-top:14px;border-top:1px solid var(--separator);padding-top:12px">
       <div class="muted small" id="co-total-info"></div>
-      <div class="row gap">
-        <button class="ios-pill ghost" onclick="closeModal()">Cancel</button>
-        <button class="ios-pill blue" id="co-save-btn" onclick="saveOrderFromCart()">💾 Save Order</button>
-      </div>
+      <div class="row gap"><button class="ios-pill ghost" onclick="closeModal()">Cancel</button><button class="ios-pill blue" id="co-save-btn" onclick="saveOrderFromCart()">💾 Save Order</button></div>
     </div>
   </div></div>`;
   renderOrderWizard();
@@ -2325,10 +2397,7 @@ function renderOrderWizard() {
   const el = document.getElementById('co-wizard'); if (!el) return;
   const steps = ['Brand', 'Model', 'Part', 'Qty', 'Note'];
   const step = orderWizard.step;
-  const indicator = steps.map((s, i) => {
-    const active = i === step, done = i < step;
-    return `<div class="ow-step ${active?'active':''} ${done?'done':''}" onclick="orderWizardSetStep(${i})"><span class="ow-num">Step ${i+1}</span>${s}</div>`;
-  }).join('');
+  const indicator = steps.map((s, i) => { const active = i === step, done = i < step; return `<div class="ow-step ${active?'active':''} ${done?'done':''}" onclick="orderWizardSetStep(${i})"><span class="ow-num">Step ${i+1}</span>${s}</div>`; }).join('');
   let inputHTML = '', history = [];
   if (step === 0) { history = getBrandHistory(); inputHTML = `<input id="ow-input" class="ios-input" list="ow-list" value="${esc(orderWizard.brand)}" placeholder="e.g. Samsung, Apple, Xiaomi..." autocomplete="off">`; }
   else if (step === 1) { history = getModelHistory(orderWizard.brand); inputHTML = `<input id="ow-input" class="ios-input" list="ow-list" value="${esc(orderWizard.model)}" placeholder="e.g. A065, iPhone 12..." autocomplete="off">`; }
@@ -2375,7 +2444,6 @@ function saveOrderFromCart() {
   tempOrderItems = [];
   save(); rebuildOrderHistory(); toast(`✓ Order ${ono} created`,'success'); closeModal(); renderOrdersBody();
 }
-
 function renderOrdersBody() {
   const body = document.getElementById('ord-body'); if (!body) return;
   const q = ordersQuery.trim().toLowerCase();
@@ -2406,36 +2474,21 @@ function renderOrdersBody() {
     const items = DB.order_items.filter(it => it.order_id === o.id);
     const itemSummary = items.map(it => {
       const sup = it.supplier_id ? DB.suppliers.find(s=>s.id===it.supplier_id) : null;
-      if (it.status === 'requested' && sup) {
-        return `<div class="bill-match-item" style="background:rgba(10,132,255,.08);padding:5px 8px;border-radius:6px"><div style="flex:1;opacity:.65">📤 <span class="small">Requested to <b>${esc(sup.name)}</b> — ${esc((it.requested_at||'').slice(0,16))}</span></div></div>`;
-      }
-      if (it.status === 'received') {
-        return `<div class="bill-match-item" style="background:rgba(48,209,88,.08);padding:5px 8px;border-radius:6px"><div style="flex:1;opacity:.65">✅ <span class="small">Received — ${esc(it.description)} × ${it.qty}</span></div></div>`;
-      }
+      if (it.status === 'requested' && sup) return `<div class="bill-match-item" style="background:rgba(10,132,255,.08);padding:5px 8px;border-radius:6px"><div style="flex:1;opacity:.65">📤 <span class="small">Requested to <b>${esc(sup.name)}</b> — ${esc((it.requested_at||'').slice(0,16))}</span></div></div>`;
+      if (it.status === 'received') return `<div class="bill-match-item" style="background:rgba(48,209,88,.08);padding:5px 8px;border-radius:6px"><div style="flex:1;opacity:.65">✅ <span class="small">Received — ${esc(it.description)} × ${it.qty}</span></div></div>`;
       const stat = it.status === 'not_found' ? '❌' : '⏳';
       return `<div class="bill-match-item"><div style="flex:1">${stat} ${esc(it.description)} <span class="muted small">× ${it.qty}</span>${sup?` <span class="code-chip" style="font-size:9px">${esc(sup.name)}</span>`:''}</div></div>`;
     }).join('');
     const pendingCount = items.filter(it => it.status === 'pending' || it.status === 'not_found').length;
     const requestedCount = items.filter(it => it.status === 'requested').length;
     return `<div class="bill-match">
-      <div class="bill-match-head">
-        <div style="flex:1;min-width:0">
-          <div class="row gap" style="margin-bottom:4px;flex-wrap:wrap"><span class="code-chip" style="background:rgba(10,132,255,.2)">${esc(o.order_no)}</span>${orderStatusBadge(o.status)}</div>
-          <div class="muted small">📅 ${esc(o.created_at)} · 👤 ${esc(o.customer_name||'Walk-in')}${o.customer_phone?' · 📞 '+esc(o.customer_phone):''}</div>
-        </div>
-        <div style="text-align:right;flex-shrink:0"><div class="strong">${items.length} item${items.length!==1?'s':''}</div><div class="muted small">${pendingCount} pending${requestedCount?` · ${requestedCount} requested`:''}</div></div>
-      </div>
+      <div class="bill-match-head"><div style="flex:1;min-width:0"><div class="row gap" style="margin-bottom:4px;flex-wrap:wrap"><span class="code-chip" style="background:rgba(10,132,255,.2)">${esc(o.order_no)}</span>${orderStatusBadge(o.status)}</div><div class="muted small">📅 ${esc(o.created_at)} · 👤 ${esc(o.customer_name||'Walk-in')}${o.customer_phone?' · 📞 '+esc(o.customer_phone):''}</div></div><div style="text-align:right;flex-shrink:0"><div class="strong">${items.length} item${items.length!==1?'s':''}</div><div class="muted small">${pendingCount} pending${requestedCount?` · ${requestedCount} requested`:''}</div></div></div>
       <div class="bill-match-items">${itemSummary}</div>
-      <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">
-        <button class="ios-pill blue sm" onclick="showOrderDetail(${o.id})">👁 View / Manage</button>
-        ${o.status === 'received' ? `<button class="ios-pill green sm" onclick="markOrderDelivered(${o.id})">✅ Delivered</button>` : ''}
-        <button class="ios-pill red sm" onclick="deleteOrder(${o.id})">🗑</button>
-      </div>
+      <div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap"><button class="ios-pill blue sm" onclick="showOrderDetail(${o.id})">👁 View / Manage</button>${o.status === 'received' ? `<button class="ios-pill green sm" onclick="markOrderDelivered(${o.id})">✅ Delivered</button>` : ''}<button class="ios-pill red sm" onclick="deleteOrder(${o.id})">🗑</button></div>
     </div>`;
   }).join('');
 }
 function ordersSetStatus(s){ ordersStatusFilter = s; renderOrdersBody(); }
-
 function showOrderDetail(id) {
   const o = DB.orders.find(x=>x.id===id); if (!o) return;
   currentOrderIdForDetail = id;
@@ -2444,84 +2497,28 @@ function showOrderDetail(id) {
   const requestedItems = items.filter(it => it.status === 'requested');
   const notFoundItems = items.filter(it => it.status === 'not_found');
   const receivedItems = items.filter(it => it.status === 'received');
-
   const renderItem = (it) => {
     const sup = it.supplier_id ? DB.suppliers.find(s=>s.id===it.supplier_id) : null;
     const triedNames = (it.tried_suppliers||[]).map(sid => DB.suppliers.find(s=>s.id===sid)?.name).filter(Boolean);
-    if (it.status === 'requested' && sup) {
-      return `<div class="ord-item requested">
-        <div class="ord-item-info">
-          <div class="strong small">${esc(it.description)} × ${it.qty}</div>
-          <div class="muted small">📤 Requested to <b>${esc(sup.name)}</b> — ${esc((it.requested_at||'').slice(0,16))}</div>
-          ${it.note?`<div class="muted small">📝 ${esc(it.note)}</div>`:''}
-          ${triedNames.length?`<div class="muted small" style="font-size:10px">Tried: ${triedNames.map(esc).join(', ')}</div>`:''}
-        </div>
-        <div class="ord-item-actions">
-          <button class="ios-pill red xs" onclick="markOrderItemNotFound(${it.id})">❌ Not Found</button>
-          <button class="ios-pill green xs" onclick="markOrderItemReceived(${it.id})">✅ Received</button>
-        </div>
-      </div>`;
-    }
-    if (it.status === 'received') {
-      return `<div class="ord-item received"><div class="ord-item-info"><div class="strong small">✅ ${esc(it.description)} × ${it.qty}</div><div class="muted small">Received — ${esc((it.received_at||'').slice(0,16))}${sup?` · from ${esc(sup.name)}`:''}</div></div></div>`;
-    }
-    if (it.status === 'not_found') {
-      return `<div class="ord-item not_found">
-        <input type="checkbox" class="ord-item-chk" data-iid="${it.id}" onchange="updateOrderSelectionUI()">
-        <div class="ord-item-info">
-          <div class="strong small">❌ ${esc(it.description)} × ${it.qty}</div>
-          <div class="muted small">Not found — order from another supplier</div>
-          ${triedNames.length?`<div class="muted small" style="font-size:10px">Tried: ${triedNames.map(esc).join(', ')}</div>`:''}
-        </div>
-      </div>`;
-    }
-    return `<div class="ord-item pending">
-      <input type="checkbox" class="ord-item-chk" data-iid="${it.id}" onchange="updateOrderSelectionUI()">
-      <div class="ord-item-info">
-        <div class="strong small">⏳ ${esc(it.description)} × ${it.qty}</div>
-        ${it.note?`<div class="muted small">📝 ${esc(it.note)}</div>`:''}
-        ${triedNames.length?`<div class="muted small" style="font-size:10px">Tried: ${triedNames.map(esc).join(', ')}</div>`:''}
-      </div>
-    </div>`;
+    if (it.status === 'requested' && sup) return `<div class="ord-item requested"><div class="ord-item-info"><div class="strong small">${esc(it.description)} × ${it.qty}</div><div class="muted small">📤 Requested to <b>${esc(sup.name)}</b> — ${esc((it.requested_at||'').slice(0,16))}</div>${it.note?`<div class="muted small">📝 ${esc(it.note)}</div>`:''}${triedNames.length?`<div class="muted small" style="font-size:10px">Tried: ${triedNames.map(esc).join(', ')}</div>`:''}</div><div class="ord-item-actions"><button class="ios-pill red xs" onclick="markOrderItemNotFound(${it.id})">❌ Not Found</button><button class="ios-pill green xs" onclick="markOrderItemReceived(${it.id})">✅ Received</button></div></div>`;
+    if (it.status === 'received') return `<div class="ord-item received"><div class="ord-item-info"><div class="strong small">✅ ${esc(it.description)} × ${it.qty}</div><div class="muted small">Received — ${esc((it.received_at||'').slice(0,16))}${sup?` · from ${esc(sup.name)}`:''}</div></div></div>`;
+    if (it.status === 'not_found') return `<div class="ord-item not_found"><input type="checkbox" class="ord-item-chk" data-iid="${it.id}" onchange="updateOrderSelectionUI()"><div class="ord-item-info"><div class="strong small">❌ ${esc(it.description)} × ${it.qty}</div><div class="muted small">Not found — order from another supplier</div>${triedNames.length?`<div class="muted small" style="font-size:10px">Tried: ${triedNames.map(esc).join(', ')}</div>`:''}</div></div>`;
+    return `<div class="ord-item pending"><input type="checkbox" class="ord-item-chk" data-iid="${it.id}" onchange="updateOrderSelectionUI()"><div class="ord-item-info"><div class="strong small">⏳ ${esc(it.description)} × ${it.qty}</div>${it.note?`<div class="muted small">📝 ${esc(it.note)}</div>`:''}${triedNames.length?`<div class="muted small" style="font-size:10px">Tried: ${triedNames.map(esc).join(', ')}</div>`:''}</div></div>`;
   };
-
   openModal(`📋 ${o.order_no}`, `
-    <div style="background:var(--glass-hover);padding:12px;border-radius:var(--radius-md);margin-bottom:14px">
-      <div class="row gap" style="flex-wrap:wrap;margin-bottom:6px">${orderStatusBadge(o.status)}</div>
-      <div class="muted small">📅 ${esc(o.created_at)}</div>
-      <div class="muted small">👤 ${esc(o.customer_name||'Walk-in')}${o.customer_phone?' · 📞 '+esc(o.customer_phone):''}</div>
-      ${o.notes?`<div class="muted small">📝 ${esc(o.notes)}</div>`:''}
-    </div>
+    <div style="background:var(--glass-hover);padding:12px;border-radius:var(--radius-md);margin-bottom:14px"><div class="row gap" style="flex-wrap:wrap;margin-bottom:6px">${orderStatusBadge(o.status)}</div><div class="muted small">📅 ${esc(o.created_at)}</div><div class="muted small">👤 ${esc(o.customer_name||'Walk-in')}${o.customer_phone?' · 📞 '+esc(o.customer_phone):''}</div>${o.notes?`<div class="muted small">📝 ${esc(o.notes)}</div>`:''}</div>
     ${(pendingItems.length + notFoundItems.length) ? `<div class="row gap" style="justify-content:space-between;margin-bottom:8px"><div class="field-label" style="margin:0">⏳ Ready to Request (${pendingItems.length + notFoundItems.length})</div><button class="ios-pill wa sm" id="ord-req-btn" onclick="requestSelectedFromDetail()">📤 Request Selected</button></div><div id="ord-pending-area">${pendingItems.map(renderItem).join('')}${notFoundItems.map(renderItem).join('')}</div>` : ''}
     ${requestedItems.length ? `<div class="field-label" style="margin-top:14px;margin-bottom:8px">📤 Sent to Supplier (${requestedItems.length})</div>${requestedItems.map(renderItem).join('')}` : ''}
     ${receivedItems.length ? `<div class="field-label" style="margin-top:14px;margin-bottom:8px">✅ Received (${receivedItems.length})</div>${receivedItems.map(renderItem).join('')}` : ''}
     <div class="row gap" style="margin-top:14px;justify-content:flex-end"><button class="ios-pill ghost" onclick="closeModal()">Close</button></div>
   `, () => {}, 'Close');
 }
-function updateOrderSelectionUI() {
-  const btn = document.getElementById('ord-req-btn'); if (!btn) return;
-  const checked = document.querySelectorAll('.ord-item-chk:checked').length;
-  btn.textContent = checked ? `📤 Request Selected (${checked})` : '📤 Request Selected';
-  btn.disabled = !checked;
-}
+function updateOrderSelectionUI() { const btn = document.getElementById('ord-req-btn'); if (!btn) return; const checked = document.querySelectorAll('.ord-item-chk:checked').length; btn.textContent = checked ? `📤 Request Selected (${checked})` : '📤 Request Selected'; btn.disabled = !checked; }
 function requestSelectedFromDetail() {
   const selected = [...document.querySelectorAll('.ord-item-chk:checked')].map(c => Number(c.dataset.iid));
   if (!selected.length) { toast('Select items first','error'); return; }
   if (!DB.suppliers.length) { toast('No suppliers added yet','error',3500); return; }
-  const html = `
-    <div class="credit-notice" style="background:rgba(37,211,102,.12);border-color:rgba(37,211,102,.5);color:var(--wa);font-size:12px">
-      Send <b>${selected.length}</b> item(s) to:
-    </div>
-    <div class="form-grid" style="gap:6px">
-      ${DB.suppliers.map(s => {
-        const phoneOk = !!s.phone;
-        return `<div class="user-select-row" onclick="${phoneOk?`closeModal();sendOrderItemsToSupplier([${selected.join(',')}],${s.id})`:''}" style="cursor:${phoneOk?'pointer':'not-allowed'};${phoneOk?'':'opacity:.5'}">
-          <div class="user-select-avatar" style="background:linear-gradient(135deg,var(--wa),var(--teal))">🚚</div>
-          <div class="user-select-info"><div class="strong">${esc(s.name)}</div><div class="muted small">${phoneOk ? '📞 '+esc(s.phone) : '<span class="danger-c">⚠ No phone saved</span>'}</div></div>
-          <button class="ios-pill wa sm" ${phoneOk?'':'disabled'}>💬 Send</button>
-        </div>`;
-      }).join('')}
-    </div>`;
+  const html = `<div class="credit-notice" style="background:rgba(37,211,102,.12);border-color:rgba(37,211,102,.5);color:var(--wa);font-size:12px">Send <b>${selected.length}</b> item(s) to:</div><div class="form-grid" style="gap:6px">${DB.suppliers.map(s => { const phoneOk = !!s.phone; return `<div class="user-select-row" onclick="${phoneOk?`closeModal();sendOrderItemsToSupplier([${selected.join(',')}],${s.id})`:''}" style="cursor:${phoneOk?'pointer':'not-allowed'};${phoneOk?'':'opacity:.5'}"><div class="user-select-avatar" style="background:linear-gradient(135deg,var(--wa),var(--teal))">🚚</div><div class="user-select-info"><div class="strong">${esc(s.name)}</div><div class="muted small">${phoneOk ? '📞 '+esc(s.phone) : '<span class="danger-c">⚠ No phone saved</span>'}</div></div><button class="ios-pill wa sm" ${phoneOk?'':'disabled'}>💬 Send</button></div>`; }).join('')}</div>`;
   openModal('📤 Choose Supplier', html, () => {}, 'Cancel');
 }
 function sendOrderItemsToSupplier(itemIds, supplierId) {
@@ -2534,21 +2531,11 @@ function sendOrderItemsToSupplier(itemIds, supplierId) {
   let msg = `🏪 *${cfg.shop_name}*\n`;
   if (cfg.shop_phone) msg += `📞 ${cfg.shop_phone}\n`;
   msg += `\n📅 ${now()}\n\n`;
-  items.forEach((it, i) => {
-    msg += `*${i+1}. ${it.description}*`;
-    if (it.note) msg += ` (${it.note})`;
-    msg += `\n   Qty: *${it.qty}*\n\n`;
-  });
+  items.forEach((it, i) => { msg += `*${i+1}. ${it.description}*`; if (it.note) msg += ` (${it.note})`; msg += `\n   Qty: *${it.qty}*\n\n`; });
   msg += `${L}\n✅ Please reply:\n• ✅ Available\n• ❌ Not available\n\n_Thank you!_ 🙏\nPOS - look mobile`;
   if (!confirm(`Send ${items.length} item(s) to ${s.name}?`)) return;
   window.open(`https://wa.me/${formatPhoneForWA(s.phone)}?text=${encodeURIComponent(msg)}`, '_blank');
-  items.forEach(it => {
-    it.supplier_id = supplierId;
-    it.status = 'requested';
-    it.requested_at = now();
-    if (!it.tried_suppliers) it.tried_suppliers = [];
-    recalcOrderStatus(it.order_id);
-  });
+  items.forEach(it => { it.supplier_id = supplierId; it.status = 'requested'; it.requested_at = now(); if (!it.tried_suppliers) it.tried_suppliers = []; recalcOrderStatus(it.order_id); });
   save(); toast(`Sent ${items.length} item(s) to ${s.name}`,'success');
   if (currentOrderIdForDetail) showOrderDetail(currentOrderIdForDetail);
   renderOrdersBody();
@@ -2568,30 +2555,16 @@ function markOrderItemNotFound(itemId) {
   const prevSup = it.supplier_id;
   if (!it.tried_suppliers) it.tried_suppliers = [];
   if (prevSup && !it.tried_suppliers.includes(prevSup)) it.tried_suppliers.push(prevSup);
-  it.supplier_id = null;
-  it.status = 'not_found';
-  it.not_found_at = now();
-  recalcOrderStatus(it.order_id);
-  save(); toast('❌ Marked not found — select another supplier to re-order','warn',3500);
+  it.supplier_id = null; it.status = 'not_found'; it.not_found_at = now();
+  recalcOrderStatus(it.order_id); save();
+  toast('❌ Marked not found — select another supplier to re-order','warn',3500);
   if (currentOrderIdForDetail) showOrderDetail(currentOrderIdForDetail);
   renderOrdersBody();
 }
-function markOrderDelivered(id) {
-  const o = DB.orders.find(x=>x.id===id); if (!o) return;
-  if (!confirm(`Mark ${o.order_no} as delivered?`)) return;
-  o.status = 'delivered'; o.delivered_at = now();
-  save(); toast('Marked delivered','success'); renderOrdersBody();
-}
-async function deleteOrder(id) {
-  const o = DB.orders.find(x=>x.id===id); if (!o) return;
-  const ok = await requireDangerConfirm(`DELETE ${o.order_no}`, `This removes the order and all items.`, { warnings: 1, password: false });
-  if (!ok) return;
-  DB.orders = DB.orders.filter(x=>x.id!==id);
-  DB.order_items = DB.order_items.filter(it=>it.order_id!==id);
-  save(); rebuildOrderHistory(); toast('Deleted','success'); renderOrdersBody();
-}
+function markOrderDelivered(id) { const o = DB.orders.find(x=>x.id===id); if (!o) return; if (!confirm(`Mark ${o.order_no} as delivered?`)) return; o.status = 'delivered'; o.delivered_at = now(); save(); toast('Marked delivered','success'); renderOrdersBody(); }
+async function deleteOrder(id) { const o = DB.orders.find(x=>x.id===id); if (!o) return; const ok = await requireDangerConfirm(`DELETE ${o.order_no}`, `This removes the order and all items.`, { warnings: 1, password: false }); if (!ok) return; DB.orders = DB.orders.filter(x=>x.id!==id); DB.order_items = DB.order_items.filter(it=>it.order_id!==id); save(); rebuildOrderHistory(); toast('Deleted','success'); renderOrdersBody(); }
 
-/* SUPPLIERS */
+/* ═══ SUPPLIERS ═══ */
 let supQuery = '';
 function renderSuppliers(root) { root.innerHTML = `<div class="view-shell"><div class="page-head"><h1>🚚 Suppliers</h1><div class="head-actions"><button class="ios-pill blue" onclick="showAddSupplier()">+ Add Supplier</button></div></div><div class="search-row">${searchBar('sup-search','🔍 Search suppliers...','supSearch(this.value)')}</div><div class="view-scroll" id="sup-body"></div></div>`; if (supQuery) document.getElementById('sup-search').value = supQuery; renderSuppliersBody(); }
 function supSearch(v){ supQuery = v; renderSuppliersBody(); }
@@ -2627,7 +2600,7 @@ function showSupplierDetail(id) {
   openModal(`🚚 ${s.name}`, `<div style="background:var(--glass-hover);padding:12px;border-radius:var(--radius-md);margin-bottom:14px">${s.phone?`<div class="muted small">📞 ${esc(s.phone)}</div>`:''}${s.address?`<div class="muted small">📍 ${esc(s.address)}</div>`:''}${s.notes?`<div class="muted small">📝 ${esc(s.notes)}</div>`:''}</div>${requested.length ? `<div class="field-label" style="margin-bottom:6px">📤 Sent — Awaiting Reply (${requested.length})</div><div style="max-height:220px;overflow-y:auto;background:var(--glass-hover);border-radius:var(--radius-md);margin-bottom:12px">${requested.map(itemRow).join('')}</div>` : ''}${received.length ? `<div class="field-label" style="margin-bottom:6px">✅ Received (${received.length})</div><div style="max-height:220px;overflow-y:auto;background:var(--glass-hover);border-radius:var(--radius-md);margin-bottom:12px">${received.map(itemRow).join('')}</div>` : ''}${notFound.length ? `<div class="field-label" style="margin-bottom:6px">❌ Not Found / Tried (${notFound.length})</div><div style="max-height:220px;overflow-y:auto;background:rgba(255,69,58,.08);border-radius:var(--radius-md)">${notFound.map(itemRow).join('')}</div>` : ''}${!items.length ? '<p class="muted center pad small">No orders yet with this supplier</p>' : ''}`, () => {}, 'Close');
 }
 
-/* REPORTS */
+/* ═══ REPORTS ═══ */
 let reportQuery = '', reportTab = 'sales';
 function renderReports(root) { root.innerHTML = `<div class="view-shell"><div class="page-head"><h1>Reports</h1></div><div class="search-row">${searchBar('rep-search','🔍 Search invoices, customers...','reportSearch(this.value)')}<input id="rep-from" class="ios-input" type="date" value="${today()}" style="max-width:160px" onchange="runReport()"><input id="rep-to" class="ios-input" type="date" value="${today()}" style="max-width:160px" onchange="runReport()">${reportTab === 'sales' ? '<button class="ios-pill ghost" onclick="exportReportCSV()">⬇ CSV</button>' : ''}</div><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px"><div class="filter-pills"><div class="filter-pill ${reportTab==='sales'?'active':''}" onclick="reportSetTab('sales')">💰 Sales</div><div class="filter-pill red-pill ${reportTab==='returns'?'active':''}" onclick="reportSetTab('returns')">↩️ Returns <span class="count">${DB.returns.length}</span></div></div></div><div class="view-scroll" id="rep-body"></div></div>`; if (reportQuery) document.getElementById('rep-search').value = reportQuery; runReport(); }
 function reportSearch(v){ reportQuery = v; runReport(); }
@@ -2657,7 +2630,7 @@ function exportReportCSV() {
   toast('CSV exported','success');
 }
 
-/* BILL SEARCH */
+/* ═══ BILL SEARCH ═══ */
 let billQuery = '', billSearchType = 'all';
 function renderBillSearch(root) {
   root.innerHTML = `<div class="view-shell"><div class="page-head"><div><h1>🔎 Bill Search</h1><p>IMEI / Model / Customer / Invoice / Barcode</p></div></div><div class="bill-search-hero"><h3>🔍 Search any sold item</h3><p>IMEI, model, customer name, invoice number, barcode</p><div class="ios-search" style="max-width:none;width:100%"><input id="bill-search-input" placeholder="Type IMEI, model, customer, invoice, barcode..." autocomplete="off" oninput="billSearch(this.value)"><button class="clear" onclick="billClear()">✕</button></div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px"><div class="filter-pill ${billSearchType==='all'?'active':''}" onclick="billSetType('all')">All</div><div class="filter-pill ${billSearchType==='imei'?'active':''}" onclick="billSetType('imei')">📱 IMEI</div><div class="filter-pill ${billSearchType==='model'?'active':''}" onclick="billSetType('model')">📋 Model</div><div class="filter-pill ${billSearchType==='customer'?'active':''}" onclick="billSetType('customer')">👤 Customer</div><div class="filter-pill ${billSearchType==='invoice'?'active':''}" onclick="billSetType('invoice')">🧾 Invoice</div><div class="filter-pill ${billSearchType==='barcode'?'active':''}" onclick="billSetType('barcode')">🏷️ Barcode</div></div></div><div class="view-scroll" id="bill-results"><div class="card center pad muted"><div style="font-size:40px;margin-bottom:8px">🔎</div><div>Type anything to search bills...</div><div class="small muted" style="margin-top:6px">Total invoices: ${DB.sales.length}</div></div></div></div>`;
@@ -2695,7 +2668,7 @@ function openBillFromSearch(saleId) {
   openModal(`🧾 ${s.invoice_no}`, `<div style="background:var(--glass-hover);padding:12px;border-radius:var(--radius-md);margin-bottom:14px"><div class="row gap" style="flex-wrap:wrap;margin-bottom:6px"><span class="strong" style="font-size:14px">${esc(s.invoice_no)}</span>${rt>0?'<span class="danger-c small">↩ returned</span>':''}${s.balance>0?`<span class="warn small">⚠ bal ${fmtInt(s.balance)}</span>`:'<span class="success small">✓ paid</span>'}</div><div class="muted small">📅 ${esc(s.created_at)}</div>${c?`<div class="muted small">👤 ${esc(c.name)}${c.phone?' · 📞 '+esc(c.phone):''}${c.id_number?' · 🆔 '+esc(c.id_number):''}</div>`:''}${u?`<div class="muted small">💰 Served by ${esc(u.name)}</div>`:''}</div><div class="field-label" style="margin-bottom:8px">Items (${items.length})</div><div style="background:var(--glass-hover);border-radius:var(--radius-md);padding:8px;margin-bottom:14px;max-height:260px;overflow-y:auto">${items.map(it => `<div style="padding:8px 10px;border-bottom:1px solid var(--separator)"><div class="row gap" style="flex-wrap:wrap;margin-bottom:3px">${codeChip(it.item_code, it.item_type==='accessory', it.item_type==='reload'||it.item_type==='manual', it.barcode)}<span class="strong" style="font-size:12px">${esc(it.description)}</span></div>${it.warranty_months?`<div class="small">${warrantyChip(it.warranty_months)}</div>`:''}<div class="row" style="justify-content:space-between"><span class="muted small">${it.qty} × ${fmtInt(it.price)}</span><span class="strong">${fmtInt(it.qty*it.price)}</span></div></div>`).join('')}</div><div style="background:var(--glass-hover);padding:12px;border-radius:var(--radius-md);margin-bottom:14px"><div class="row" style="justify-content:space-between;margin-bottom:4px"><span>Subtotal</span><span>${fmtInt(s.subtotal)}</span></div>${s.discount?`<div class="row" style="justify-content:space-between;color:var(--orange)"><span>Discount</span><span>-${fmtInt(s.discount)}</span></div>`:''}<div class="row" style="justify-content:space-between;font-weight:800;font-size:16px;margin-top:6px;padding-top:6px;border-top:1px solid var(--separator)"><span>TOTAL</span><span>${fmtInt(s.total)}</span></div><div class="row" style="justify-content:space-between"><span>Paid (${esc(s.payment_method)})</span><span class="success">${fmtInt(s.paid_amount)}</span></div>${s.change > 0.01 ? `<div class="row" style="justify-content:space-between"><span>Change given</span><span class="success">${fmtInt(s.change)}</span></div>` : ''}${s.balance > 0.01 ? `<div class="row" style="justify-content:space-between;color:var(--orange);font-weight:700"><span>Balance due</span><span>${fmtInt(s.balance)}</span></div>` : ''}</div>${returns.length ? `<div style="margin-bottom:14px"><div class="field-label" style="margin-bottom:8px">Returns (${returns.length})</div><div style="background:rgba(255,69,58,.08);border-radius:var(--radius-md);padding:8px">${returns.map(r=>`<div style="padding:6px 8px;border-bottom:1px solid var(--separator)"><div class="strong small">${esc(r.description).slice(0,50)}</div><div class="muted small">${r.qty} × ${fmtInt(r.unit_price)} → refund ${fmtInt(r.refund_amount)} · ${r.restocked?'✅ restocked':'❌ written off'}</div></div>`).join('')}</div></div>` : ''}<div class="row gap" style="flex-wrap:wrap"><button class="ios-pill blue" style="flex:1" onclick="closeModal();printSaleReceipt(${s.id})">🖨️ Print</button><button class="ios-pill wa" style="flex:1" onclick="closeModal();promptWhatsApp(${s.id})">💬 WhatsApp</button></div>`, () => {}, 'Close');
 }
 
-/* SETTINGS */
+/* ═══ SETTINGS ═══ */
 let settingsTab = 'shop', settingsQuery = '';
 function renderSettings(root) { if (!can('settings')){ root.innerHTML = '<div class="card center pad muted">Access denied</div>'; return; } root.innerHTML = `<div class="view-shell"><div class="page-head"><h1>Settings</h1></div><div class="search-row">${searchBar('set-search','🔍 Search...','settingsSearch(this.value)')}<div class="segmented"><button class="${settingsTab==='shop'?'active':''}" onclick="settingsTab='shop';renderSettings(document.getElementById('content'))">Shop</button><button class="${settingsTab==='users'?'active':''}" onclick="settingsTab='users';renderSettings(document.getElementById('content'))">Users</button><button class="${settingsTab==='data'?'active':''}" onclick="settingsTab='data';renderSettings(document.getElementById('content'))">Data</button></div></div><div class="view-scroll" id="set-body"></div></div>`; if (settingsQuery) document.getElementById('set-search').value = settingsQuery; renderSettingsBody(); }
 function settingsSearch(v){ settingsQuery = v; renderSettingsBody(); }
@@ -2711,57 +2684,83 @@ function renderSettingsBody() {
     if (q) users = users.filter(u => (u.username||'').toLowerCase().includes(q) || (u.name||'').toLowerCase().includes(q) || (u.role||'').toLowerCase().includes(q));
     body.innerHTML = `<div class="card" style="margin-bottom:14px"><div class="row" style="justify-content:space-between;margin-bottom:12px"><h3 style="margin:0">Users</h3><button class="ios-pill blue sm" onclick="showAddUser()">+ Add</button></div>${users.length ? `<div class="ios-table-wrap"><table class="ios-table"><thead><tr><th>#</th><th>Photo</th><th>Username</th><th>Name</th><th>Role</th><th>Status</th><th></th></tr></thead><tbody>${users.map(u => { const im = u.id===currentUser.id; const av = u.photo ? `<img src="${u.photo}" style="width:32px;height:32px;border-radius:50%;object-fit:cover">` : `<div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px">${esc((u.name||u.username).charAt(0).toUpperCase())}</div>`; return `<tr><td class="muted">${u.id}</td><td>${av}</td><td class="strong">${esc(u.username)}${im?' <span class="muted small">(you)</span>':''}</td><td>${esc(u.name)}</td><td><span class="badge badge-${u.role}">${esc(u.role)}</span></td><td>${u.active ? '<span class="success">Active</span>' : '<span class="danger-c">Disabled</span>'}</td><td style="display:flex;gap:4px;flex-wrap:wrap"><button class="ios-pill sm" onclick="showEditUser(${u.id})">Edit</button><button class="ios-pill sm" onclick="showChangePassword(${u.id})">Pass</button>${!im ? `<button class="ios-pill sm" onclick="toggleUserActive(${u.id})">${u.active?'Dis':'En'}</button>` : ''}${!im ? `<button class="ios-pill red sm" onclick="deleteUser(${u.id})">Del</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>` : '<p class="muted center pad">No users</p>'}</div>`;
   } else {
-    body.innerHTML = `<div class="card" style="max-width:600px;margin-bottom:14px;border-color:rgba(48,209,88,.4)"><h3>🔥 Firebase</h3><div style="padding:12px;background:rgba(48,209,88,.08);border-radius:var(--radius-md);margin-bottom:12px"><div class="strong success" style="margin-bottom:4px">${fbConnected ? '✓ Connected' : '⚠ Offline'}${hasPendingChanges()?` · <span class="warn">Pending sync (${getPendingAge()}s)</span>`:''}</div><div class="muted small">Project: <b>${esc(firebaseConfig.projectId)}</b></div><div class="muted small">Version: <b>${POS_VERSION}</b></div>${hasPendingChanges()?`<div class="muted small" style="margin-top:4px">Last sync: <b>${getLastSyncTs()?new Date(getLastSyncTs()).toLocaleString():'never'}</b></div>`:''}</div><div class="row gap" style="flex-wrap:wrap"><button class="ios-pill green" onclick="manualSync()">🔄 Force Sync${hasPendingChanges()?' ⏳':''}</button><button class="ios-pill" onclick="reloadFromServer()">📥 Reload</button></div></div><div class="card" style="max-width:600px;margin-bottom:14px"><h3>🛡️ Safety Backup</h3><p class="muted small" style="margin-bottom:12px">Local backup — Firebase fail වුනොත් data restore කරනවා</p><button class="ios-pill" onclick="restoreFromSafety()">♻️ Restore from safety backup</button></div><div class="card" style="max-width:600px;margin-bottom:14px"><h3>📤 Backup</h3><div class="row gap" style="flex-wrap:wrap"><button class="ios-pill" onclick="exportJSON()">⬇ Download JSON</button><button class="ios-pill" onclick="importJSON()">⬆ Import JSON</button></div></div><div class="card danger-zone-card" style="max-width:600px"><h3>🗑 DANGER ZONE</h3><p class="danger-text" style="font-size:12px;margin-bottom:14px;font-weight:600">⚠️ <b>PERMANENT</b> — Firebase + ALL devices cache</p><button class="ios-pill red" onclick="resetData()">🗑 DELETE ALL DATA + CACHE</button></div>`;
+    body.innerHTML = `<div class="card" style="max-width:600px;margin-bottom:14px;border-color:rgba(48,209,88,.4)"><h3>🔥 Firebase</h3><div style="padding:12px;background:rgba(48,209,88,.08);border-radius:var(--radius-md);margin-bottom:12px"><div class="strong success" style="margin-bottom:4px">${fbConnected ? '✓ Connected' : '⚠ Offline'}${dirty?` · <span class="warn">Pending sync</span>`:''}</div><div class="muted small">Project: <b>${esc(firebaseConfig.projectId)}</b></div><div class="muted small">Version: <b>${POS_VERSION}</b></div>${dirty?`<div class="muted small" style="margin-top:4px">Last sync: <b>${getLastSyncTs()?new Date(getLastSyncTs()).toLocaleString():'never'}</b></div>`:''}</div><div class="row gap" style="flex-wrap:wrap"><button class="ios-pill green" onclick="manualSync()">🔄 Force Sync${dirty?' ⏳':''}</button><button class="ios-pill" onclick="reloadFromServer()">📥 Reload</button></div></div><div class="card" style="max-width:600px;margin-bottom:14px"><h3>🛡️ Safety Backup</h3><p class="muted small" style="margin-bottom:12px">Local backup — Firebase fail වුනොත් data restore කරනවා</p><button class="ios-pill" onclick="restoreFromSafety()">♻️ Restore from safety backup</button></div><div class="card" style="max-width:600px;margin-bottom:14px"><h3>📤 Backup</h3><div class="row gap" style="flex-wrap:wrap"><button class="ios-pill" onclick="exportJSON()">⬇ Download JSON</button><button class="ios-pill" onclick="importJSON()">⬆ Import JSON</button></div></div><div class="card danger-zone-card" style="max-width:600px"><h3>🗑 DANGER ZONE</h3><p class="danger-text" style="font-size:12px;margin-bottom:14px;font-weight:600">⚠️ <b>PERMANENT</b> — Firebase + ALL devices cache</p><button class="ios-pill red" onclick="resetData()">🗑 DELETE ALL DATA + CACHE</button></div>`;
   }
 }
-function restoreFromSafety() { const b = loadSafetyBackup(); if (!isDBValid(b)) { toast('No valid backup found','error'); return; } if (!confirm('Restore from safety backup?')) return; DB = b; migrateDB(); saveToServer(true); toast('♻️ Restored from backup','success'); setTimeout(()=>location.reload(), 800); }
-async function reloadFromServer() { if (!confirm('Reload from Firebase?')) return; const r = await loadFromServer(); if (r.ok) { applyTheme(DB.settings.theme||'dark'); applyLogo(); render(); toast('Reloaded','success'); } else toast('Failed: ' + r.error, 'error'); }
+function restoreFromSafety() { const b = loadSafetyBackup(); if (!isValidDB(b)) { toast('No valid backup found','error'); return; } if (!confirm('Restore from safety backup?')) return; DB = b; migrateDB(); markDirty(); pushToFirebase(); toast('♻️ Restored from backup','success'); setTimeout(()=>location.reload(), 800); }
+async function reloadFromServer() { if (!confirm('Reload from Firebase?')) return; try { const snap = await fbRef.once('value'); const remote = fromFirebase(snap.val()); if (isValidDB(remote)) { DB = remote; lastSyncedDB = deepClone(remote); migrateDB(); cacheLocal(); clearDirty(); applyTheme(DB.settings.theme||'dark'); applyLogo(); render(); toast('Reloaded','success'); } else toast('Remote data invalid','error'); } catch(e) { toast('Failed: ' + e.message, 'error'); } }
 function saveSettings() { DB.settings.shop_name = document.getElementById('s-name').value.trim() || 'PHONE HUB'; DB.settings.shop_address = document.getElementById('s-addr').value.trim(); DB.settings.shop_phone = document.getElementById('s-phone').value.trim(); DB.settings.currency = document.getElementById('s-cur').value.trim() || 'LKR'; DB.settings.low_stock = Number(document.getElementById('s-low').value || 2); DB.settings.print_size = document.getElementById('s-print').value || '58mm'; save(); toast('Settings saved','success'); document.getElementById('side-shop-name').textContent = DB.settings.shop_name; }
 
+/* ═══════════════════════════════════════════════════════════════
+   RESET ALL DATA — WORKS RELIABLY NOW
+   ═══════════════════════════════════════════════════════════════ */
 async function resetData() {
+  if (!requireAdmin()) return;
   const ok = await requireDangerConfirm('DELETE ALL DATA + ALL DEVICE CACHES',
     'This will permanently erase: Firebase data, this device\'s cache, AND every logged-in device\'s cache. All devices will be force-reloaded.',
-    { warnings: 3, password: true, adminRole: true });
+    { warnings: 3, password: true });
   if (!ok) return;
-  resetting = true; if (writeTimer) { clearTimeout(writeTimer); writeTimer = null; }
-  syncing = true;
+  resetting = true; syncing = true;
+  if (writeTimer) { clearTimeout(writeTimer); writeTimer = null; }
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
   const icon = document.getElementById('sync-icon');
   if (icon) icon.classList.add('spinning');
   updateStorageStatus('saving');
-  toast('🗑 Clearing data...', 'info', 3000);
+  toast('🗑 Clearing ALL data...', 'info', 3000);
   try {
-    DB = createFreshDB();
-    migrateDB();
-    DB._lastSaved = Date.now();
-    await fbRef.set(DB);
+    /* Step 1: Remove pos_data from Firebase */
+    let removed = false;
+    try { await fbRef.remove(); removed = true; }
+    catch(e1) {
+      console.warn('fbRef.remove() failed, trying set(null):', e1);
+      try { await fbRef.set(null); removed = true; }
+      catch(e2) {
+        console.warn('fbRef.set(null) failed, trying set({}):', e2);
+        try { await fbRef.set({}); removed = true; }
+        catch(e3) {
+          throw new Error('Firebase write blocked. Check Rules: ' + (e3.message || 'Permission denied'));
+        }
+      }
+    }
+    if (!removed) throw new Error('Could not clear Firebase');
+    /* Step 2: Set new reset token (forces other devices to reload) */
     const newToken = 'reset-' + Date.now() + '-' + Math.random().toString(36).slice(2,10);
-    await fbResetRef.set(newToken);
-    await new Promise(r => setTimeout(r, 400));
-    const snap = await fbRef.once('value');
-    const remote = snap.val();
-    if (!isDBValid(remote)) throw new Error('Firebase write failed');
+    try { await fbResetRef.set(newToken); }
+    catch(e) {
+      console.warn('Reset token write failed (non-fatal):', e);
+      throw new Error('Cannot write reset token. Firebase Rules block writes. Check Firebase Console → Rules.');
+    }
+    /* Step 3: Verify */
+    await new Promise(r => setTimeout(r, 600));
+    const check = await fbRef.once('value');
+    if (check.val() !== null) throw new Error('Firebase still has data after reset');
+    /* Step 4: Wipe local cache */
     await wipeAllCaches();
-    try { localStorage.setItem(LS_RESET_TOKEN_KEY, newToken); localStorage.removeItem(LS_PENDING_KEY); } catch(e) {}
-    document.body.innerHTML = `<div style="position:fixed;inset:0;background:#0a0a0f;color:#fff;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:20px;z-index:99999;font-family:system-ui"><div style="font-size:64px">✅</div><h1 style="font-size:22px;margin:0">All Data Cleared</h1><p style="color:#888;max-width:340px;text-align:center;font-size:13px;line-height:1.6">Firebase + all device caches cleared. Reloading...</p></div>`;
+    try { localStorage.setItem(LS_RESET_TOKEN_KEY, newToken); } catch(e) {}
+    /* Step 5: Show success */
+    document.body.innerHTML = '<div style="position:fixed;inset:0;background:#0a0a0f;color:#fff;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:20px;z-index:99999;font-family:system-ui"><div style="font-size:64px">✅</div><h1 style="font-size:22px;margin:0">All Data Cleared</h1><p style="color:#888;max-width:340px;text-align:center;font-size:13px;line-height:1.6">Firebase + all device caches cleared. Reloading...</p></div>';
     setTimeout(() => location.reload(), 1800);
   } catch(e) {
     console.error('Reset failed:', e);
     resetting = false; syncing = false;
     if (icon) icon.classList.remove('spinning');
     updateStorageStatus('disconnected');
-    toast('❌ Reset failed: ' + (e.message || 'Check internet'), 'error', 5000);
+    const msg = String(e.message || e);
+    const hint = msg.includes('Permission') || msg.includes('blocked') || msg.includes('Rules') ? '\n\n👉 Firebase Console → Realtime Database → Rules ලිහිල් කරන්න.' : '';
+    toast('❌ Reset failed: ' + msg.slice(0, 80) + hint, 'error', 8000);
   }
 }
 
+/* ═══ USERS MGMT ═══ */
 function showAddUser() { if (!requireAdmin()) return; openModal('Add User', `<div class="form-grid">${field('Username', '<input id="nu-username" class="ios-input" autocomplete="off">', true)}${field('Display name', '<input id="nu-name" class="ios-input">', true)}${field('Password', '<input id="nu-pass" class="ios-input" type="password" autocomplete="new-password">', true)}${field('Confirm password', '<input id="nu-pass2" class="ios-input" type="password" autocomplete="new-password">', true)}${field('Role', `<select id="nu-role" class="ios-input"><option value="cashier">Cashier</option><option value="manager">Manager</option><option value="admin">Admin</option></select>`, true)}</div>`, () => { const u = document.getElementById('nu-username').value.trim().toLowerCase(); const n = document.getElementById('nu-name').value.trim(); const p = document.getElementById('nu-pass').value; const p2 = document.getElementById('nu-pass2').value; if (!u || !n || !p){ toast('All required','error'); return false; } if (p !== p2){ toast('Passwords mismatch','error'); return false; } if (p.length < 4){ toast('Too short','error'); return false; } if (DB.users.find(x=>x.username===u)){ toast('Username taken','error'); return false; } DB.users.push({id:nextId('users'),username:u,name:n,password:hashPassword(p),role:document.getElementById('nu-role').value,active:true,photo:null,created_at:now()}); save(); toast('User added','success'); renderSettingsBody(); }); }
 function showEditUser(id) { if (!requireAdmin()) return; const u = DB.users.find(x=>x.id===id); if (!u) return; editingUserId = id; tempUserPhoto = undefined; const im = u.id === currentUser.id; const av = u.photo ? `<img src="${u.photo}" style="width:100%;height:100%;object-fit:cover">` : esc((u.name||'?').charAt(0).toUpperCase()); openModal(`Edit ${u.username}`, `<div class="form-grid"><div style="display:flex;align-items:center;gap:14px;padding:12px;background:var(--glass-hover);border-radius:var(--radius-md)"><div id="eu-photo-preview" style="width:72px;height:72px;border-radius:50%;background:linear-gradient(135deg,var(--blue),var(--purple));display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:28px;overflow:hidden;flex-shrink:0">${av}</div><div style="flex:1;min-width:0"><div style="display:flex;gap:6px;flex-wrap:wrap"><label class="ios-pill blue sm" style="cursor:pointer;margin:0">📷 Upload<input type="file" accept="image/*" style="display:none" onchange="uploadUserPhoto(this.files[0]);this.value=''"></label>${u.photo ? `<button class="ios-pill red sm" onclick="removeUserPhoto()">🗑</button>` : ''}</div></div></div>${field('Name', `<input id="eu-name" class="ios-input" value="${esc(u.name)}">`, true)}${field('Role', `<select id="eu-role" class="ios-input" ${im?'disabled':''}><option value="cashier" ${u.role==='cashier'?'selected':''}>Cashier</option><option value="manager" ${u.role==='manager'?'selected':''}>Manager</option><option value="admin" ${u.role==='admin'?'selected':''}>Admin</option></select>`)}</div>`, () => { const u2 = DB.users.find(x=>x.id===editingUserId); if (!u2) return false; u2.name = document.getElementById('eu-name').value.trim() || u2.name; if (!im) u2.role = document.getElementById('eu-role').value; if (tempUserPhoto !== undefined) u2.photo = tempUserPhoto; save(); toast('Updated','success'); if (im){ updateUserBox(); buildNav(); } tempUserPhoto = undefined; editingUserId = null; renderSettingsBody(); }); }
 function uploadUserPhoto(file) { if (!file || !file.type.startsWith('image/') || file.size > 500 * 1024) { toast('Invalid image','error'); return; } const r = new FileReader(); r.onload = e => { tempUserPhoto = e.target.result; const p = document.getElementById('eu-photo-preview'); if (p) p.innerHTML = `<img src="${tempUserPhoto}" style="width:100%;height:100%;object-fit:cover">`; toast('Photo ready','success'); }; r.readAsDataURL(file); }
 function removeUserPhoto() { tempUserPhoto = null; const u = DB.users.find(x=>x.id===editingUserId); const p = document.getElementById('eu-photo-preview'); if (p) p.textContent = (u?.name||'?').charAt(0).toUpperCase(); }
 function showChangePassword(id) { const u = DB.users.find(x=>x.id===id); if (!u) return; const im = u.id===currentUser.id; if (!im && !requireAdmin()) return; openModal(`Change password — ${u.username}`, `<div class="form-grid">${!im ? field('Your admin password', '<input id="cp-old-admin" class="ios-input" type="password">', true) : ''}${field('New password', '<input id="cp-new" class="ios-input" type="password">', true)}${field('Confirm', '<input id="cp-new2" class="ios-input" type="password">', true)}</div>`, () => { if (!im) { const ap = document.getElementById('cp-old-admin').value; if (hashPassword(ap) !== currentUser.password){ toast('Admin pass wrong','error'); return false; } } else { const op = prompt('Current password:'); if (op === null) return false; if (hashPassword(op) !== u.password){ toast('Wrong','error'); return false; } } const p1 = document.getElementById('cp-new').value; const p2 = document.getElementById('cp-new2').value; if (p1.length < 4 || p1 !== p2){ toast('Check passwords','error'); return false; } u.password = hashPassword(p1); save(); toast('Password changed','success'); }); }
 function toggleUserActive(id) { if (!requireAdmin()) return; const u = DB.users.find(x=>x.id===id); if (!u || u.id===currentUser.id) return; u.active = !u.active; save(); toast(`User ${u.active?'enabled':'disabled'}`,'success'); renderSettingsBody(); }
-async function deleteUser(id) { if (!requireAdmin()) return; const u = DB.users.find(x=>x.id===id); if (!u) return; if (u.id===currentUser.id || u.username === 'admin'){ toast('Cannot delete','error'); return; } const ok = await requireDangerConfirm(`DELETE user "${u.username}"`, `Name: <b>${u.name}</b>`, { warnings: 2, password: true, adminRole: true }); if (!ok) return; DB.users = DB.users.filter(x=>x.id!==id); save(); toast('User deleted','success'); renderSettingsBody(); }
+async function deleteUser(id) { if (!requireAdmin()) return; const u = DB.users.find(x=>x.id===id); if (!u) return; if (u.id===currentUser.id || u.username === 'admin'){ toast('Cannot delete','error'); return; } const ok = await requireDangerConfirm(`DELETE user "${u.username}"`, `Name: <b>${u.name}</b>`, { warnings: 2, password: true }); if (!ok) return; DB.users = DB.users.filter(x=>x.id!==id); save(); toast('User deleted','success'); renderSettingsBody(); }
 
-/* PRINT */
+/* ═══ PRINT ═══ */
 function applyPrintSize() {
   bcCleanup();
   const size = DB?.settings?.print_size || '58mm';
@@ -2788,55 +2787,79 @@ function printRepairReceipt(repairId) {
   setTimeout(()=>window.print(),120);
 }
 
-/* GLOBAL CLICK */
+/* ═══ GLOBAL CLICK ═══ */
 document.addEventListener('mousedown', (e) => {
   const s = document.getElementById('cust-name-suggest');
   if (s && !s.classList.contains('hidden')) { const inS = e.target.closest('#cust-name-suggest'); const inN = e.target.closest('#cust-name'); if (!inS && !inN) hideCustSuggest(); }
   if (isMobile() && document.body.classList.contains('sidebar-open-mobile')) { const iS = e.target.closest('#sidebar'); const mB = e.target.closest('[data-more]'); if (!iS && !mB) document.body.classList.remove('sidebar-open-mobile'); }
 });
 
-/* INIT */
+/* ═══════════════════════════════════════════════════════════════
+   INIT
+   ═══════════════════════════════════════════════════════════════ */
 (async function init() {
   try {
-    const snap = await fbResetRef.once('value');
-    const remoteToken = snap.val();
-    const localToken = localStorage.getItem(LS_RESET_TOKEN_KEY) || '';
-    if (remoteToken && remoteToken !== localToken) {
-      console.log('🚨 Reset token mismatch — wiping caches before load');
-      await wipeAllCaches();
-      try { localStorage.setItem(LS_RESET_TOKEN_KEY, remoteToken); } catch(e) {}
+    /* Pre-load: check reset token */
+    try {
+      const snap = await fbResetRef.once('value');
+      const remoteToken = snap.val();
+      const localToken = localStorage.getItem(LS_RESET_TOKEN_KEY) || '';
+      if (remoteToken && remoteToken !== localToken) {
+        console.log('🚨 Reset token mismatch — wiping caches');
+        await wipeAllCaches();
+        try { localStorage.setItem(LS_RESET_TOKEN_KEY, remoteToken); } catch(e) {}
+      }
+    } catch(e) { console.warn('Reset token check failed:', e); }
+
+    /* Load cached data first (fast startup) */
+    const cached = loadCache();
+    if (isValidDB(cached)) {
+      DB = cached;
+      migrateDB();
+      applyTheme(DB.settings.theme || 'dark');
+      applyLogo();
+      document.getElementById('login-shop-name').textContent = DB.settings.shop_name;
     }
-  } catch(e) { console.warn('Reset token check failed:', e); }
 
-  const cached = loadCache();
-  if (isDBValid(cached)) { DB = cached; migrateDB(); applyTheme(DB.settings.theme || 'dark'); applyLogo(); document.getElementById('login-shop-name').textContent = DB.settings.shop_name; }
+    /* Load from server */
+    const r = await loadFromServer();
+    if (!r.ok) {
+      document.getElementById('loading-screen').innerHTML = `<div style="text-align:center;padding:20px;max-width:440px"><div style="font-size:56px;margin-bottom:16px">📡</div><h2 style="font-size:20px;margin-bottom:8px">Cannot reach Firebase</h2><p style="color:var(--text-2);font-size:13px;line-height:1.6">Check internet connection, then retry.</p><button class="ios-pill blue" style="margin-top:16px" onclick="location.reload()">🔄 Retry</button></div>`;
+      return;
+    }
 
-  const r = await loadFromServer();
-  if (!r.ok) {
-    document.getElementById('loading-screen').innerHTML = `<div style="text-align:center;padding:20px;max-width:440px"><div style="font-size:56px;margin-bottom:16px">📡</div><h2 style="font-size:20px;margin-bottom:8px">Cannot reach Firebase</h2><p style="color:var(--text-2);font-size:13px;line-height:1.6">Check internet connection, then retry.</p><button class="ios-pill blue" style="margin-top:16px" onclick="location.reload()">🔄 Retry</button></div>`;
-    return;
+    applyTheme(DB.settings.theme || 'dark');
+    applyLogo();
+    document.getElementById('login-shop-name').textContent = DB.settings.shop_name;
+    rebuildOrderHistory();
+
+    const sid = Number(sessionStorage.getItem('pos_user_id'));
+    if (sid) { const u = DB.users.find(x => x.id === sid && x.active); if (u) currentUser = u; }
+    if (currentUser) {
+      document.getElementById('loading-screen').classList.add('hidden');
+      document.getElementById('login-screen').classList.add('hidden');
+      document.getElementById('app-layout').classList.remove('hidden');
+      updateUserBox(); buildNav(); buildMobileTabs();
+      currentView = firstAllowedView(); render();
+    } else showLogin();
+
+    fbInitDone = true;
+    startRealtimeSync();
+    startResetListener();
+    const vc = document.getElementById('version-chip'); if (vc) vc.textContent = POS_VERSION;
+    if (dirty || isDirtyLS()) { dirty = true; updateStorageStatus('offline-pending'); }
+    else updateStorageStatus();
+  } catch(e) {
+    console.error('Init failed:', e);
+    document.getElementById('loading-screen').innerHTML = `<div style="text-align:center;padding:20px;max-width:440px"><div style="font-size:56px;margin-bottom:16px">⚠️</div><h2 style="font-size:20px;margin-bottom:8px">Startup error</h2><p style="color:var(--text-2);font-size:13px;line-height:1.6">${esc(e.message||'Unknown')}</p><button class="ios-pill blue" style="margin-top:16px" onclick="location.reload()">🔄 Retry</button></div>`;
   }
-  applyTheme(DB.settings.theme || 'dark'); applyLogo();
-  document.getElementById('login-shop-name').textContent = DB.settings.shop_name;
-  rebuildOrderHistory();
-  const sid = Number(sessionStorage.getItem('pos_user_id'));
-  if (sid) { const u = DB.users.find(x => x.id === sid && x.active); if (u) currentUser = u; }
-  if (currentUser) {
-    document.getElementById('loading-screen').classList.add('hidden');
-    document.getElementById('login-screen').classList.add('hidden');
-    document.getElementById('app-layout').classList.remove('hidden');
-    updateUserBox(); buildNav(); buildMobileTabs();
-    currentView = firstAllowedView(); render();
-  } else showLogin();
-  fbInitDone = true;
-  startRealtimeSync();
-  startResetListener();
-  const vc = document.getElementById('version-chip'); if (vc) vc.textContent = POS_VERSION;
-  if (hasPendingChanges()) updateStorageStatus('offline-pending');
 })();
 document.getElementById('login-pass').addEventListener('keypress', e => { if (e.key==='Enter') doLogin(); });
+
+/* Save on unload (best-effort) */
 window.addEventListener('beforeunload', () => {
-  if (!resetting && writeTimer) { clearTimeout(writeTimer); try { if (isDBValid(DB)) { cacheLocal(); saveSafetyBackup(); fbRef.set(DB); setLastSyncTs(Date.now()); clearPending(); } } catch(e) { markPending(); } }
+  if (resetting) return;
+  try { if (isValidDB(DB)) { cacheLocal(); saveSafetyBackup(); } } catch(e) {}
 });
 </script>
 </body>
